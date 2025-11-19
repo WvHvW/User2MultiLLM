@@ -139,7 +139,7 @@ def generate_city_network(num_nodes=1000, target_degree=10):
         distance = float(np.linalg.norm(pos_u - pos_v))
         cost = distance * 0.01
         G.edges[u, v]['distance'] = cost
-        G.edges[u, v]['capacity_mbps'] = max(500, distance % 10 * 100)
+        G.edges[u, v]['capacity_mbps'] = max(400, (distance % 10) * 100)
 
     common_nodes = list(range(num_nodes))
     return G, common_nodes

@@ -53,45 +53,79 @@ def merge_allocations_by_path(allocations):
 
 def write_origin_results(file_path, blocks, user_distribution,
                          llm_distribution):
-    with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-        sheet_name = f'{user_distribution}-{llm_distribution}'
-        start_row = 0
+    """
+    将所有算法结果写入同一个 sheet，每个算法之间空一行。
+    使用追加模式，保留已有的其他 sheet。
+    """
+    sheet_name = f'{user_distribution}-{llm_distribution}'
 
-        for title, df in blocks:
-            if df is None or df.empty:
-                continue
+    # 先将所有 blocks 合并成一个大 DataFrame
+    all_rows = []
+    for title, df in blocks:
+        if df is None or df.empty:
+            continue
 
-            df_to_write = df.copy()
+        df_to_write = df.copy()
 
-            # 计算总开销
-            total_cost = df_to_write['total_cost'].sum()
-            total_flow = df_to_write['total_flow'].sum(
-            ) if 'total_flow' in df_to_write.columns else 0.0
+        # 计算总开销
+        total_cost = df_to_write['total_cost'].sum()
+        total_flow = df_to_write['total_flow'].sum(
+        ) if 'total_flow' in df_to_write.columns else 0.0
 
-            total_row = {
-                'algorithm': f"{df_to_write['algorithm'].iloc[0]}-Total",
-                'user_id': '',
-                'llm_id': '',
-                'path': 'Total',
-                'total_flow': total_flow,
-                'total_cost': total_cost,
-            }
+        total_row = {
+            'algorithm': f"{df_to_write['algorithm'].iloc[0]}-Total",
+            'user_id': '',
+            'llm_id': '',
+            'path': 'Total',
+            'total_flow': total_flow,
+            'total_cost': total_cost,
+        }
 
-            df_with_total = pd.concat(
-                [df_to_write, pd.DataFrame([total_row])], ignore_index=True)
+        # 添加数据行和总计行
+        df_with_total = pd.concat(
+            [df_to_write, pd.DataFrame([total_row])], ignore_index=True)
+        all_rows.append(df_with_total)
 
-            # 写入当前块
-            df_with_total.to_excel(writer,
-                                   sheet_name=sheet_name,
-                                   index=False,
-                                   startrow=start_row)
+        # 添加空行（用空字典表示）
+        empty_row = pd.DataFrame([{col: '' for col in df_with_total.columns}])
+        all_rows.append(empty_row)
 
-            # 下一个块起始行：当前块行数 + 2（空一行）
-            start_row += len(df_with_total) + 2
+    # 合并所有 blocks（移除最后一个空行）
+    if all_rows:
+        if len(all_rows) > 1:
+            all_rows.pop()  # 移除最后的空行
+        final_df = pd.concat(all_rows, ignore_index=True)
+    else:
+        # 如果没有数据，创建空 DataFrame
+        final_df = pd.DataFrame(columns=[
+            'algorithm', 'user_id', 'llm_id', 'path', 'total_flow',
+            'total_cost', 'original_order'
+        ])
+
+    # 追加模式：如果文件存在则追加新 sheet，否则创建新文件
+    mode = 'a' if os.path.exists(file_path) else 'w'
+    kwargs = {'mode': mode, 'engine': 'openpyxl'}
+    if mode == 'a':
+        kwargs['if_sheet_exists'] = 'replace'  # 如果 sheet 已存在则替换
+
+    # 一次性写入整个 sheet
+    with pd.ExcelWriter(file_path, **kwargs) as writer:
+        final_df.to_excel(writer, sheet_name=sheet_name, index=False)
 
 
-def compute_edge_betweenness(alo_network, top_n=10):
-    """返回按介数中心性排序的前 top_n 条有向链路。"""
+def compute_edge_betweenness(alo_network, users, llms, top_n=10):
+    """
+    返回按介数中心性排序的前 top_n 条有向链路。
+
+    参数:
+        alo_network: 网络对象
+        users: 用户字典 {user_id: User}
+        llms: LLM字典 {llm_id: LLM}
+        top_n: 返回前 N 条边
+
+    注意: 只计算从 user 节点到 LLM 节点的最短路径的介数中心性，
+         剔除无关路径，更准确地反映业务流量的关键链路。
+    """
     G = nx.DiGraph()
     for link_list in alo_network.links.values():
         for link in link_list:
@@ -104,9 +138,38 @@ def compute_edge_betweenness(alo_network, top_n=10):
                        capacity=link.capacity,
                        weight=link.distance)
 
-    edge_centrality = nx.edge_betweenness_centrality(G,
-                                                     weight='weight',
-                                                     normalized=True)
+    # 提取 user 和 LLM 节点 ID
+    user_nodes = list(users.keys())
+    llm_nodes = list(llms.keys())
+
+    # 手动计算受限介数中心性：只考虑 user → LLM 路径
+    edge_count = {}
+    total_paths = 0
+
+    for user_id in user_nodes:
+        for llm_id in llm_nodes:
+            try:
+                # 计算加权最短路径
+                path = nx.shortest_path(G,
+                                        source=user_id,
+                                        target=llm_id,
+                                        weight='weight')
+                total_paths += 1
+
+                # 统计路径中的每条边
+                for i in range(len(path) - 1):
+                    edge = (path[i], path[i + 1])
+                    edge_count[edge] = edge_count.get(edge, 0) + 1
+            except nx.NetworkXNoPath:
+                # 如果没有路径，跳过
+                continue
+
+    # 归一化：除以总路径数
+    edge_centrality = {}
+    if total_paths > 0:
+        for edge, count in edge_count.items():
+            edge_centrality[edge] = count / total_paths
+
     sorted_edges = sorted(edge_centrality.items(),
                           key=lambda item: item[1],
                           reverse=True)
@@ -135,46 +198,18 @@ def calculate_link_utilization(alo_network, target_edges):
 
 
 def write_link_utilization_report(file_path, sheet_name, algorithm_utils,
-                                  critical_edges):
-    columns = ['algorithm']
-    for idx in range(1, len(critical_edges) + 1):
-        columns.append(f'critical_link_{idx}')
-        columns.append(f'critical_link_{idx}_utilization')
-
-    rows = []
-    blank_row = {col: '' for col in columns}
-
-    for alg_name, util_map in algorithm_utils:
-        row = {col: '' for col in columns}
-        row['algorithm'] = alg_name
-        for idx, edge in enumerate(critical_edges, start=1):
-            label_key = f'critical_link_{idx}'
-            value_key = f'critical_link_{idx}_utilization'
-            row[label_key] = f'{edge[0]}->{edge[1]}'
-            row[value_key] = util_map.get(edge, 0.0)
-        rows.append(row)
-        rows.append(blank_row.copy())
-
-    if rows:
-        rows.pop()  # 移除最后一行空行
-
-    df = pd.DataFrame(rows, columns=columns)
-    with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-        df.to_excel(writer, sheet_name=sheet_name, index=False)
-
-
-def write_link_utilization_report(file_path, sheet_name, algorithm_utils,
                                   top_edges):
     """
-    覆盖前一个实现：
+    保存链路利用率报告：
     - 第一列为算法名
+    - 第二列为 top-k 链路的平均利用率
     - 后续列为同一组前 top_n 关键链路的利用率
     - 末尾附带每条关键链路的端点与介数中心性
     """
     edge_pairs = [edge for edge, _ in top_edges]
     edge_betweenness = [bet for _, bet in top_edges]
 
-    columns = ['algorithm']
+    columns = ['algorithm', 'avg_utilization_topk']
     for idx in range(1, len(edge_pairs) + 1):
         columns.append(f'link_{idx}_utilization')
     for idx in range(1, len(edge_pairs) + 1):
@@ -186,6 +221,9 @@ def write_link_utilization_report(file_path, sheet_name, algorithm_utils,
     for alg_name, util_map in algorithm_utils:
         row = {col: '' for col in columns}
         row['algorithm'] = alg_name
+
+        # 计算 top-k 链路的平均利用率
+        utilizations = []
         for idx, ((src, dst), bet) in enumerate(zip(edge_pairs,
                                                     edge_betweenness),
                                                 start=1):
@@ -193,14 +231,30 @@ def write_link_utilization_report(file_path, sheet_name, algorithm_utils,
             src_key = f'link_{idx}_src'
             dst_key = f'link_{idx}_dst'
             bet_key = f'link_{idx}_betweenness'
-            row[util_key] = util_map.get((src, dst), 0.0)
+
+            util_value = util_map.get((src, dst), 0.0)
+            row[util_key] = util_value
             row[src_key] = src
             row[dst_key] = dst
             row[bet_key] = bet
+
+            utilizations.append(util_value)
+
+        # 平均利用率
+        row['avg_utilization_topk'] = sum(utilizations) / len(
+            utilizations) if utilizations else 0.0
+
         rows.append(row)
 
     df = pd.DataFrame(rows, columns=columns)
-    with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+
+    # 追加模式：如果文件存在则追加新 sheet，否则创建新文件
+    mode = 'a' if os.path.exists(file_path) else 'w'
+    kwargs = {'mode': mode, 'engine': 'openpyxl'}
+    if mode == 'a':
+        kwargs['if_sheet_exists'] = 'replace'
+
+    with pd.ExcelWriter(file_path, **kwargs) as writer:
         df.to_excel(writer, sheet_name=sheet_name, index=False)
 
 
@@ -221,7 +275,14 @@ def write_runtime_report(file_path, sheet_name, runtime_data):
         })
 
     df = pd.DataFrame(rows, columns=['algorithm', 'runtime_seconds'])
-    with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
+
+    # 追加模式：如果文件存在则追加新 sheet，否则创建新文件
+    mode = 'a' if os.path.exists(file_path) else 'w'
+    kwargs = {'mode': mode, 'engine': 'openpyxl'}
+    if mode == 'a':
+        kwargs['if_sheet_exists'] = 'replace'
+
+    with pd.ExcelWriter(file_path, **kwargs) as writer:
         df.to_excel(writer, sheet_name=sheet_name, index=False)
 
 
@@ -383,124 +444,131 @@ def k_split_augment(network, users, llms, k):
 
 
 if __name__ == "__main__":
-    # for user_distribution in DISTRIBUTION_TYPES:
-    #     for llm_distribution in DISTRIBUTION_TYPES:
-    user_distribution = 'power_law'
-    llm_distribution = 'power_law'
-    json = Entity.load_network_from_sheets()
-    network = json['network']
-    nodes_list = list(json['nodes'].values())
-    nodes = json['nodes']
-    llms = Entity.load_llm_info(user_distribution, llm_distribution)
-    users = Entity.load_user_info(user_distribution)
-    for llm in llms.values():
-        nodes_list[llm.id].role = 'llm'
-        nodes_list[llm.id].deployed = 1
-    for user in users.values():
-        nodes_list[user.id].role = 'user'
+    for user_distribution in DISTRIBUTION_TYPES:
+        for llm_distribution in DISTRIBUTION_TYPES:
+            # user_distribution = 'power_law'
+            # llm_distribution = 'power_law'
+            json = Entity.load_network_from_sheets()
+            network = json['network']
+            nodes_list = list(json['nodes'].values())
+            nodes = json['nodes']
+            llms = Entity.load_llm_info(user_distribution, llm_distribution)
+            users = Entity.load_user_info(user_distribution)
+            for llm in llms.values():
+                nodes_list[llm.id].role = 'llm'
+                nodes_list[llm.id].deployed = 1
+            for user in users.values():
+                nodes_list[user.id].role = 'user'
 
-    # 用户按带宽排序
-    users = dict(
-        sorted(users.items(), key=lambda item: item[1].bw, reverse=True))
+            # 用户按带宽排序
+            users = dict(
+                sorted(users.items(),
+                       key=lambda item: item[1].bw,
+                       reverse=True))
 
-    user_ideal_llms = {}
-    for user in users.values():
-        distances, costs = network.dijkstra_ideal(user.id, user.bw)
-        sorted_nodes = sorted(distances, key=distances.get)
-        ideal_llms = {
-            n: costs[n]
-            for n in sorted_nodes if nodes_list[n].role == 'llm'
-        }
-        user_ideal_llms[user.id] = ideal_llms
+            user_ideal_llms = {}
+            for user in users.values():
+                distances, costs = network.dijkstra_ideal(user.id, user.bw)
+                sorted_nodes = sorted(distances, key=distances.get)
+                ideal_llms = {
+                    n: costs[n]
+                    for n in sorted_nodes if nodes_list[n].role == 'llm'
+                }
+                user_ideal_llms[user.id] = ideal_llms
 
-    # 初始化运行时间记录字典
-    runtime_data = {}
+            # 初始化运行时间记录字典
+            runtime_data = {}
 
-    # no_split
-    start_time = time.time()
-    no_split_allocations, no_split_network = no_split(network, users, llms,
-                                                      user_ideal_llms)
-    runtime_data['no-split'] = time.time() - start_time
-    network.reset_network(llms)
+            # no_split
+            start_time = time.time()
+            no_split_allocations, no_split_network = no_split(
+                network, users, llms, user_ideal_llms)
+            runtime_data['no-split'] = time.time() - start_time
+            network.reset_network(llms)
 
-    # k_split
-    ks = [1, 2, 4, 5, 10, 20, 25, 50, 100, 250]
-    k_split_results = {kid: None for kid in ks}
-    k_split_networks = {kid: None for kid in ks}
-    for split_k in ks:
-        start_time = time.time()
-        k_split_allocations, k_split_network = k_split(network,
-                                                       users,
-                                                       llms,
-                                                       k=split_k)
-        runtime_data[f'k-split-{split_k}'] = time.time() - start_time
-        k_split_results[split_k] = k_split_allocations
-        k_split_networks[split_k] = k_split_network
-        network.reset_network(llms)
-
-    # k_split_augment
-    augment_results = {kid: None for kid in ks}
-    augment_networks = {kid: None for kid in ks}
-    for split_k in ks:
-        start_time = time.time()
-        augment_allocations, augment_network = k_split_augment(network,
+            # k_split
+            ks = [1, 2, 4, 5, 10, 20, 25, 50, 100, 250]
+            k_split_results = {kid: None for kid in ks}
+            k_split_networks = {kid: None for kid in ks}
+            for split_k in ks:
+                start_time = time.time()
+                k_split_allocations, k_split_network = k_split(network,
                                                                users,
                                                                llms,
                                                                k=split_k)
-        runtime_data[f'k-split-augment-{split_k}'] = time.time() - start_time
-        augment_results[split_k] = augment_allocations
-        augment_networks[split_k] = augment_network
-        network.reset_network(llms)
+                runtime_data[f'k-split-{split_k}'] = time.time() - start_time
+                k_split_results[split_k] = k_split_allocations
+                k_split_networks[split_k] = k_split_network
+                network.reset_network(llms)
 
-    # 组织所有算法的 allocations
-    all_blocks = []
+            # k_split_augment
+            augment_results = {kid: None for kid in ks}
+            augment_networks = {kid: None for kid in ks}
+            for split_k in ks:
+                start_time = time.time()
+                augment_allocations, augment_network = k_split_augment(
+                    network, users, llms, k=split_k)
+                runtime_data[f'k-split-augment-{split_k}'] = time.time(
+                ) - start_time
+                augment_results[split_k] = augment_allocations
+                augment_networks[split_k] = augment_network
+                network.reset_network(llms)
 
-    # no_split 结果
-    no_split_df = merge_allocations_by_path(no_split_allocations)
-    all_blocks.append(('no-split', no_split_df))
+            # 组织所有算法的 allocations
+            all_blocks = []
 
-    # k_split 结果
-    for k_val, allocs in k_split_results.items():
-        if not allocs:
-            continue
-        df_k = merge_allocations_by_path(allocs)
-        all_blocks.append((f'k-split-{k_val}', df_k))
-    # k_split_augment 结果
-    for k_val, allocs in augment_results.items():
-        if not allocs:
-            continue
-        df_k = merge_allocations_by_path(allocs)
-        all_blocks.append((f'k-split-augment-{k_val}', df_k))
+            # no_split 结果
+            no_split_df = merge_allocations_by_path(no_split_allocations)
+            all_blocks.append(('no-split', no_split_df))
 
-    write_origin_results(origin_file, all_blocks, user_distribution,
-                         llm_distribution)
+            # k_split 结果
+            for k_val, allocs in k_split_results.items():
+                if not allocs:
+                    continue
+                df_k = merge_allocations_by_path(allocs)
+                all_blocks.append((f'k-split-{k_val}', df_k))
+            # k_split_augment 结果
+            for k_val, allocs in augment_results.items():
+                if not allocs:
+                    continue
+                df_k = merge_allocations_by_path(allocs)
+                all_blocks.append((f'k-split-augment-{k_val}', df_k))
 
-    # Link utilization report
-    top_edges = compute_edge_betweenness(network, top_n=30)
-    critical_edges = [edge for edge, _ in top_edges]
+            write_origin_results(origin_file, all_blocks, user_distribution,
+                                 llm_distribution)
 
-    algorithm_networks = [('no-split', no_split_network)]
-    algorithm_networks.extend([(f'k-split-{k_val}', net)
-                               for k_val, net in k_split_networks.items()
-                               if net is not None])
-    algorithm_networks.extend([(f'k-split-augment-{k_val}', net)
-                               for k_val, net in augment_networks.items()
-                               if net is not None])
+            # Link utilization report
+            # 使用受限介数中心性：只计算 user→LLM 路径
+            top_edges = compute_edge_betweenness(network,
+                                                 users,
+                                                 llms,
+                                                 top_n=30)
+            critical_edges = [edge for edge, _ in top_edges]
 
-    algorithm_utils = []
-    for alg_name, net in algorithm_networks:
-        if not critical_edges:
-            break
-        util_map = calculate_link_utilization(net, critical_edges)
-        algorithm_utils.append((alg_name, util_map))
+            algorithm_networks = [('no-split', no_split_network)]
+            algorithm_networks.extend([
+                (f'k-split-{k_val}', net)
+                for k_val, net in k_split_networks.items() if net is not None
+            ])
+            algorithm_networks.extend([
+                (f'k-split-augment-{k_val}', net)
+                for k_val, net in augment_networks.items() if net is not None
+            ])
 
-    if critical_edges and algorithm_utils:
-        write_link_utilization_report(
-            link_util_file, f'{user_distribution}-{llm_distribution}',
-            algorithm_utils, top_edges)
+            algorithm_utils = []
+            for alg_name, net in algorithm_networks:
+                if not critical_edges:
+                    break
+                util_map = calculate_link_utilization(net, critical_edges)
+                algorithm_utils.append((alg_name, util_map))
 
-    # 保存运行时间报告
-    write_runtime_report(runtime_file,
-                         f'{user_distribution}-{llm_distribution}',
-                         runtime_data)
-    print(f"Runtime report saved to {runtime_file}")
+            if critical_edges and algorithm_utils:
+                write_link_utilization_report(
+                    link_util_file, f'{user_distribution}-{llm_distribution}',
+                    algorithm_utils, top_edges)
+
+            # 保存运行时间报告
+            write_runtime_report(runtime_file,
+                                 f'{user_distribution}-{llm_distribution}',
+                                 runtime_data)
+            print(f"Runtime report saved to {runtime_file}")
