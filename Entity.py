@@ -239,8 +239,7 @@ class Network:
 
                 for link in self.links.get(u, []):
                     rc = link.residual_capacity
-                    # 只要有残余容量就考虑，不强制要求 >= push
-                    if rc <= EPSILON:  # 浮点精度保护
+                    if rc < push:  # 浮点精度保护
                         continue
                     v = link.dst
                     # reduced cost（允许使用由残余边构成的负环）

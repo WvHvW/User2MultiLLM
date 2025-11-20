@@ -10,7 +10,7 @@ import copy
 DISTRIBUTION_TYPES = Entity.DISTRIBUTION_TYPES
 script_path = os.path.dirname(os.path.abspath(__file__))
 result_path = os.path.join(script_path, 'results')
-is_shared = 0
+is_shared = 1
 
 _RESULT_DIR = os.path.join(os.path.dirname(__file__), 'results')
 os.makedirs(_RESULT_DIR, exist_ok=True)
