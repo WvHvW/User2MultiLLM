@@ -239,7 +239,8 @@ class Network:
 
                 for link in self.links.get(u, []):
                     rc = link.residual_capacity
-                    if rc < push - EPSILON:  # 浮点精度保护
+                    # 只要有残余容量就考虑，不强制要求 >= push
+                    if rc <= EPSILON:  # 浮点精度保护
                         continue
                     v = link.dst
                     # reduced cost（允许使用由残余边构成的负环）
@@ -338,11 +339,11 @@ class Network:
                     pi[nid] += dist[nid]
                     updated_count += 1
 
-            # 接近完成时输出势能更新信息
-            if remaining <= 100:
-                print(
-                    f"  [SSP] 势能更新完成: updated_nodes={updated_count}/{len(self.nodes)}, 迭代{iteration}结束\n"
-                )
+            # # 接近完成时输出势能更新信息
+            # if remaining <= 100:
+            #     print(
+            #         f"  [SSP] 势能更新完成: updated_nodes={updated_count}/{len(self.nodes)}, 迭代{iteration}结束\n"
+            #     )
 
         if trace:
             return allocations, trace_log

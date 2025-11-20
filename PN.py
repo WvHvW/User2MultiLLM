@@ -139,9 +139,97 @@ def generate_city_network(num_nodes=1000, target_degree=10):
         distance = float(np.linalg.norm(pos_u - pos_v))
         cost = distance * 0.01
         G.edges[u, v]['distance'] = cost
-        G.edges[u, v]['capacity_mbps'] = max(400, (distance % 10) * 100)
+        G.edges[u, v]['capacity_mbps'] = max(500, (distance % 10) * 100)
 
     common_nodes = list(range(num_nodes))
+    return G, common_nodes
+
+
+def create_custom_network():
+    """
+    手动创建自定义网络拓扑，与 generate_city_network 输出格式完全兼容。
+
+    使用方法：
+        1. 修改 node_coords 字典，定义节点坐标
+        2. 修改 edges 列表，定义连接关系
+        3. 运行后自动生成距离和带宽矩阵
+
+    返回:
+        G: NetworkX 图对象，包含节点坐标、边权重（距离）和容量
+        common_nodes: 节点ID列表
+    """
+
+    # ========== 在这里自定义你的网络 ==========
+
+    # 节点坐标：{节点ID: (x坐标, y坐标)}
+    # 坐标范围建议在 (0, 100) x (0, 100) 之间
+    node_coords = {
+        0: (10, 20),
+        1: (30, 40),
+        2: (50, 60),
+        3: (70, 80),
+        4: (20, 70),
+        5: (60, 30),
+    }
+
+    # 边列表：[(节点1, 节点2), ...]
+    # 定义哪些节点之间有连接
+    edges = [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (0, 4),
+        (1, 5),
+        (2, 5),
+        (3, 5),
+        (4, 5),
+    ]
+
+    # ========== 以下是自动处理逻辑，无需修改 ==========
+
+    # 创建空的无向图
+    G = nx.Graph()
+
+    # 添加节点并设置坐标
+    for node_id, (x, y) in node_coords.items():
+        G.add_node(node_id, pos=(float(x), float(y)))
+
+    # 添加边
+    for u, v in edges:
+        if u not in G.nodes or v not in G.nodes:
+            raise ValueError(f"边 ({u}, {v}) 中的节点不存在于节点坐标字典中")
+        G.add_edge(u, v)
+
+    # 检查连通性
+    if not nx.is_connected(G):
+        components = list(nx.connected_components(G))
+        print(f"[警告] 网络不连通，共有 {len(components)} 个连通分量：")
+        for i, comp in enumerate(components, 1):
+            print(f"  分量 {i}: {sorted(comp)}")
+        raise ValueError("网络必须是连通的。请添加更多边以连接所有节点。")
+
+    # 为边添加权重和容量属性（与 generate_city_network 逻辑一致）
+    for u, v in G.edges():
+        pos_u = np.array(G.nodes[u]['pos'])
+        pos_v = np.array(G.nodes[v]['pos'])
+        distance = float(np.linalg.norm(pos_u - pos_v))
+
+        # 距离成本（与 generate_city_network 一致：distance * 0.01）
+        cost = distance * 0.01
+        G.edges[u, v]['distance'] = cost
+
+        # 带宽容量（与 generate_city_network 一致）
+        # 使用距离的模运算生成变化的容量，最小400 Mbps
+        G.edges[u, v]['capacity_mbps'] = max(400, (distance % 10) * 100)
+
+    # 返回节点列表
+    common_nodes = list(G.nodes())
+
+    # 打印网络统计信息
+    print(f"[自定义网络] 节点数: {G.number_of_nodes()}, 边数: {G.number_of_edges()}")
+    avg_degree = 2.0 * G.number_of_edges() / G.number_of_nodes()
+    print(f"[自定义网络] 平均度: {avg_degree:.2f}")
+
     return G, common_nodes
 
 
@@ -166,7 +254,7 @@ def assign_user_nodes_by_distribution(G, distribution_type='uniform'):
 
     # 定义用户节点的配置
     user_choices = [{
-        'num': 8,
+        'num': 40,
         'num_users': 100,
         'cpu_demand': 4,
         'mem_demand': 8,
@@ -292,7 +380,7 @@ def assign_llm_nodes_by_distribution(G,
                     del G.nodes[n][attr]
 
     # 定义LLM候选节点的配置
-    llm_choices = [{'num': 4, 'cpu_capacity': 8, 'mem_capacity': 16}]
+    llm_choices = [{'num': 20, 'cpu_capacity': 8, 'mem_capacity': 16}]
 
     # 计算总的LLM节点数量
     total_llm_nodes = sum(choice['num'] for choice in llm_choices)
@@ -393,8 +481,22 @@ def assign_llm_nodes_by_distribution(G,
     return G, llm_nodes
 
 
+# ========== 网络生成方式选择 ==========
+# 设置为 True 使用自定义网络（修改 create_custom_network 函数内的坐标和边）
+# 设置为 False 使用随机生成网络
+USE_CUSTOM_NETWORK = False
+
 # 生成基础网络拓扑
-Graph, common_nodes = generate_city_network(num_nodes=20, target_degree=6)
+if USE_CUSTOM_NETWORK:
+    print("=" * 50)
+    print("使用自定义网络")
+    print("=" * 50)
+    Graph, common_nodes = create_custom_network()
+else:
+    print("=" * 50)
+    print("使用随机生成网络")
+    print("=" * 50)
+    Graph, common_nodes = generate_city_network(num_nodes=100, target_degree=6)
 
 # 根据不同分布类型分配节点并保存结果
 distribution_types = ['uniform', 'power_law', 'sparse', 'gaussian']

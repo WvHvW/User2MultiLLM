@@ -210,12 +210,6 @@ def write_link_utilization_report(file_path, sheet_name, algorithm_utils,
     edge_betweenness = [bet for _, bet in top_edges]
 
     columns = ['algorithm', 'avg_utilization_topk']
-    for idx in range(1, len(edge_pairs) + 1):
-        columns.append(f'link_{idx}_utilization')
-    for idx in range(1, len(edge_pairs) + 1):
-        columns.append(f'link_{idx}_src')
-        columns.append(f'link_{idx}_dst')
-        columns.append(f'link_{idx}_betweenness')
 
     rows = []
     for alg_name, util_map in algorithm_utils:
@@ -227,16 +221,11 @@ def write_link_utilization_report(file_path, sheet_name, algorithm_utils,
         for idx, ((src, dst), bet) in enumerate(zip(edge_pairs,
                                                     edge_betweenness),
                                                 start=1):
-            util_key = f'link_{idx}_utilization'
-            src_key = f'link_{idx}_src'
-            dst_key = f'link_{idx}_dst'
-            bet_key = f'link_{idx}_betweenness'
+            columns.append(f'{src}->{dst} utilization')
+            util_key = f'{src}->{dst} utilization'
 
             util_value = util_map.get((src, dst), 0.0)
             row[util_key] = util_value
-            row[src_key] = src
-            row[dst_key] = dst
-            row[bet_key] = bet
 
             utilizations.append(util_value)
 
@@ -542,7 +531,7 @@ if __name__ == "__main__":
             top_edges = compute_edge_betweenness(network,
                                                  users,
                                                  llms,
-                                                 top_n=30)
+                                                 top_n=15)
             critical_edges = [edge for edge, _ in top_edges]
 
             algorithm_networks = [('no-split', no_split_network)]
