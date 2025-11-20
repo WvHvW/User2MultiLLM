@@ -433,131 +433,127 @@ def k_split_augment(network, users, llms, k):
 
 
 if __name__ == "__main__":
-    for user_distribution in DISTRIBUTION_TYPES:
-        for llm_distribution in DISTRIBUTION_TYPES:
-            # user_distribution = 'power_law'
-            # llm_distribution = 'power_law'
-            json = Entity.load_network_from_sheets()
-            network = json['network']
-            nodes_list = list(json['nodes'].values())
-            nodes = json['nodes']
-            llms = Entity.load_llm_info(user_distribution, llm_distribution)
-            users = Entity.load_user_info(user_distribution)
-            for llm in llms.values():
-                nodes_list[llm.id].role = 'llm'
-                nodes_list[llm.id].deployed = 1
-            for user in users.values():
-                nodes_list[user.id].role = 'user'
+    # for user_distribution in DISTRIBUTION_TYPES:
+    #     for llm_distribution in DISTRIBUTION_TYPES:
+    user_distribution = 'uniform'
+    llm_distribution = 'uniform'
+    json = Entity.load_network_from_sheets()
+    network = json['network']
+    nodes_list = list(json['nodes'].values())
+    nodes = json['nodes']
+    llms = Entity.load_llm_info(user_distribution, llm_distribution)
+    users = Entity.load_user_info(user_distribution)
+    for llm in llms.values():
+        nodes_list[llm.id].role = 'llm'
+        nodes_list[llm.id].deployed = 1
+    for user in users.values():
+        nodes_list[user.id].role = 'user'
 
-            # 用户按带宽排序
-            users = dict(
-                sorted(users.items(),
-                       key=lambda item: item[1].bw,
-                       reverse=True))
+    # 用户按带宽排序
+    users = dict(
+        sorted(users.items(), key=lambda item: item[1].bw, reverse=True))
 
-            user_ideal_llms = {}
-            for user in users.values():
-                distances, costs = network.dijkstra_ideal(user.id, user.bw)
-                sorted_nodes = sorted(distances, key=distances.get)
-                ideal_llms = {
-                    n: costs[n]
-                    for n in sorted_nodes if nodes_list[n].role == 'llm'
-                }
-                user_ideal_llms[user.id] = ideal_llms
+    user_ideal_llms = {}
+    for user in users.values():
+        distances, costs = network.dijkstra_ideal(user.id, user.bw)
+        sorted_nodes = sorted(distances, key=distances.get)
+        ideal_llms = {
+            n: costs[n]
+            for n in sorted_nodes if nodes_list[n].role == 'llm'
+        }
+        user_ideal_llms[user.id] = ideal_llms
 
-            # 初始化运行时间记录字典
-            runtime_data = {}
+    Entity.visualize_network(nodes_list, network, llms, users)
 
-            # no_split
-            start_time = time.time()
-            no_split_allocations, no_split_network = no_split(
-                network, users, llms, user_ideal_llms)
-            runtime_data['no-split'] = time.time() - start_time
-            network.reset_network(llms)
+    # 初始化运行时间记录字典
+    runtime_data = {}
 
-            # k_split
-            ks = [1, 2, 4, 5, 10, 20, 25, 50, 100, 250]
-            k_split_results = {kid: None for kid in ks}
-            k_split_networks = {kid: None for kid in ks}
-            for split_k in ks:
-                start_time = time.time()
-                k_split_allocations, k_split_network = k_split(network,
+    # no_split
+    start_time = time.time()
+    no_split_allocations, no_split_network = no_split(network, users, llms,
+                                                      user_ideal_llms)
+    runtime_data['no-split'] = time.time() - start_time
+    network.reset_network(llms)
+
+    # k_split
+    ks = [1, 2, 4, 5, 10, 20, 25, 50, 100, 250]
+    k_split_results = {kid: None for kid in ks}
+    k_split_networks = {kid: None for kid in ks}
+    for split_k in ks:
+        start_time = time.time()
+        k_split_allocations, k_split_network = k_split(network,
+                                                       users,
+                                                       llms,
+                                                       k=split_k)
+        runtime_data[f'k-split-{split_k}'] = time.time() - start_time
+        k_split_results[split_k] = k_split_allocations
+        k_split_networks[split_k] = k_split_network
+        network.reset_network(llms)
+
+    # k_split_augment
+    augment_results = {kid: None for kid in ks}
+    augment_networks = {kid: None for kid in ks}
+    for split_k in ks:
+        start_time = time.time()
+        augment_allocations, augment_network = k_split_augment(network,
                                                                users,
                                                                llms,
                                                                k=split_k)
-                runtime_data[f'k-split-{split_k}'] = time.time() - start_time
-                k_split_results[split_k] = k_split_allocations
-                k_split_networks[split_k] = k_split_network
-                network.reset_network(llms)
+        runtime_data[f'k-split-augment-{split_k}'] = time.time() - start_time
+        augment_results[split_k] = augment_allocations
+        augment_networks[split_k] = augment_network
+        network.reset_network(llms)
 
-            # k_split_augment
-            augment_results = {kid: None for kid in ks}
-            augment_networks = {kid: None for kid in ks}
-            for split_k in ks:
-                start_time = time.time()
-                augment_allocations, augment_network = k_split_augment(
-                    network, users, llms, k=split_k)
-                runtime_data[f'k-split-augment-{split_k}'] = time.time(
-                ) - start_time
-                augment_results[split_k] = augment_allocations
-                augment_networks[split_k] = augment_network
-                network.reset_network(llms)
+    # 组织所有算法的 allocations
+    all_blocks = []
 
-            # 组织所有算法的 allocations
-            all_blocks = []
+    # no_split 结果
+    no_split_df = merge_allocations_by_path(no_split_allocations)
+    all_blocks.append(('no-split', no_split_df))
 
-            # no_split 结果
-            no_split_df = merge_allocations_by_path(no_split_allocations)
-            all_blocks.append(('no-split', no_split_df))
+    # k_split 结果
+    for k_val, allocs in k_split_results.items():
+        if not allocs:
+            continue
+        df_k = merge_allocations_by_path(allocs)
+        all_blocks.append((f'k-split-{k_val}', df_k))
+    # k_split_augment 结果
+    for k_val, allocs in augment_results.items():
+        if not allocs:
+            continue
+        df_k = merge_allocations_by_path(allocs)
+        all_blocks.append((f'k-split-augment-{k_val}', df_k))
 
-            # k_split 结果
-            for k_val, allocs in k_split_results.items():
-                if not allocs:
-                    continue
-                df_k = merge_allocations_by_path(allocs)
-                all_blocks.append((f'k-split-{k_val}', df_k))
-            # k_split_augment 结果
-            for k_val, allocs in augment_results.items():
-                if not allocs:
-                    continue
-                df_k = merge_allocations_by_path(allocs)
-                all_blocks.append((f'k-split-augment-{k_val}', df_k))
+    write_origin_results(origin_file, all_blocks, user_distribution,
+                         llm_distribution)
 
-            write_origin_results(origin_file, all_blocks, user_distribution,
-                                 llm_distribution)
+    # Link utilization report
+    # 使用受限介数中心性：只计算 user→LLM 路径
+    top_edges = compute_edge_betweenness(network, users, llms, top_n=15)
+    critical_edges = [edge for edge, _ in top_edges]
 
-            # Link utilization report
-            # 使用受限介数中心性：只计算 user→LLM 路径
-            top_edges = compute_edge_betweenness(network,
-                                                 users,
-                                                 llms,
-                                                 top_n=15)
-            critical_edges = [edge for edge, _ in top_edges]
+    algorithm_networks = [('no-split', no_split_network)]
+    algorithm_networks.extend([(f'k-split-{k_val}', net)
+                               for k_val, net in k_split_networks.items()
+                               if net is not None])
+    algorithm_networks.extend([(f'k-split-augment-{k_val}', net)
+                               for k_val, net in augment_networks.items()
+                               if net is not None])
 
-            algorithm_networks = [('no-split', no_split_network)]
-            algorithm_networks.extend([
-                (f'k-split-{k_val}', net)
-                for k_val, net in k_split_networks.items() if net is not None
-            ])
-            algorithm_networks.extend([
-                (f'k-split-augment-{k_val}', net)
-                for k_val, net in augment_networks.items() if net is not None
-            ])
+    algorithm_utils = []
+    for alg_name, net in algorithm_networks:
+        if not critical_edges:
+            break
+        util_map = calculate_link_utilization(net, critical_edges)
+        algorithm_utils.append((alg_name, util_map))
 
-            algorithm_utils = []
-            for alg_name, net in algorithm_networks:
-                if not critical_edges:
-                    break
-                util_map = calculate_link_utilization(net, critical_edges)
-                algorithm_utils.append((alg_name, util_map))
+    if critical_edges and algorithm_utils:
+        write_link_utilization_report(
+            link_util_file, f'{user_distribution}-{llm_distribution}',
+            algorithm_utils, top_edges)
 
-            if critical_edges and algorithm_utils:
-                write_link_utilization_report(
-                    link_util_file, f'{user_distribution}-{llm_distribution}',
-                    algorithm_utils, top_edges)
-
-            # 保存运行时间报告
-            write_runtime_report(runtime_file,
-                                 f'{user_distribution}-{llm_distribution}',
-                                 runtime_data)
-            print(f"Runtime report saved to {runtime_file}")
+    # 保存运行时间报告
+    write_runtime_report(runtime_file,
+                         f'{user_distribution}-{llm_distribution}',
+                         runtime_data)
+    print(f"Runtime report saved to {runtime_file}")

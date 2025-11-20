@@ -32,6 +32,7 @@ test/
 .package*
 claude.md
 notebook/
+visualization/
 MANIFEST
 
 # PyInstaller

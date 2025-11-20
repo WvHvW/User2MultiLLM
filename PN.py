@@ -164,26 +164,35 @@ def create_custom_network():
     # 节点坐标：{节点ID: (x坐标, y坐标)}
     # 坐标范围建议在 (0, 100) x (0, 100) 之间
     node_coords = {
-        0: (10, 20),
-        1: (30, 40),
-        2: (50, 60),
-        3: (70, 80),
-        4: (20, 70),
-        5: (60, 30),
+        0: (50, 50),
+        1: (40, 60),
+        2: (40, 40),
+        3: (60, 60),
+        4: (60, 40),
+        5: (30, 50),
+        6: (20, 60),
+        7: (20, 30),
+        8: (50, 20),
+        9: (30, 10),
+        10: (40, 80),
+        11: (50, 70),
+        12: (70, 60),
+        13: (70, 50),
+        14: (80, 50),
+        15: (80, 40),
+        16: (70, 30),
+        17: (70, 20),
+        18: (50, 30),
+        19: (70, 80)
     }
 
     # 边列表：[(节点1, 节点2), ...]
     # 定义哪些节点之间有连接
-    edges = [
-        (0, 1),
-        (1, 2),
-        (2, 3),
-        (0, 4),
-        (1, 5),
-        (2, 5),
-        (3, 5),
-        (4, 5),
-    ]
+    edges = [(0, 1), (0, 2), (0, 3), (0, 4), (0, 18), (1, 2), (1, 5), (1, 10),
+             (2, 5), (2, 18), (3, 4), (3, 11), (3, 12), (4, 16), (4, 18),
+             (5, 6), (5, 9), (6, 7), (6, 10), (7, 9), (8, 9), (8, 16), (8, 17),
+             (10, 11), (11, 12), (11, 19), (12, 13), (12, 19), (13, 14),
+             (13, 15), (14, 15), (14, 19), (15, 17), (16, 17), (16, 18)]
 
     # ========== 以下是自动处理逻辑，无需修改 ==========
 
@@ -219,8 +228,8 @@ def create_custom_network():
         G.edges[u, v]['distance'] = cost
 
         # 带宽容量（与 generate_city_network 一致）
-        # 使用距离的模运算生成变化的容量，最小400 Mbps
-        G.edges[u, v]['capacity_mbps'] = max(400, (distance % 10) * 100)
+        # 使用距离的模运算生成变化的容量，最小500 Mbps
+        G.edges[u, v]['capacity_mbps'] = max(500, (distance % 10) * 100)
 
     # 返回节点列表
     common_nodes = list(G.nodes())
@@ -254,7 +263,7 @@ def assign_user_nodes_by_distribution(G, distribution_type='uniform'):
 
     # 定义用户节点的配置
     user_choices = [{
-        'num': 40,
+        'num': 8,
         'num_users': 100,
         'cpu_demand': 4,
         'mem_demand': 8,
@@ -380,7 +389,7 @@ def assign_llm_nodes_by_distribution(G,
                     del G.nodes[n][attr]
 
     # 定义LLM候选节点的配置
-    llm_choices = [{'num': 20, 'cpu_capacity': 8, 'mem_capacity': 16}]
+    llm_choices = [{'num': 4, 'cpu_capacity': 8, 'mem_capacity': 16}]
 
     # 计算总的LLM节点数量
     total_llm_nodes = sum(choice['num'] for choice in llm_choices)
@@ -484,7 +493,7 @@ def assign_llm_nodes_by_distribution(G,
 # ========== 网络生成方式选择 ==========
 # 设置为 True 使用自定义网络（修改 create_custom_network 函数内的坐标和边）
 # 设置为 False 使用随机生成网络
-USE_CUSTOM_NETWORK = False
+USE_CUSTOM_NETWORK = True
 
 # 生成基础网络拓扑
 if USE_CUSTOM_NETWORK:

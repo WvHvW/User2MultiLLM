@@ -579,7 +579,7 @@ def visualize_network(nodes,
     llms: LLM字典
     users: 用户字典
     """
-    G = nx.Graph()
+    G = nx.DiGraph()
     pos = {}
     node_colors = []
     node_sizes = []
@@ -618,13 +618,17 @@ def visualize_network(nodes,
 
     # 添加边
     added_edges = set()
+    edge_attrs = {}
     for src_node_id, links in network.links.items():
         for link in links:
-            if not link.is_reverse:
-                edge_key = tuple(sorted([src_node_id, link.dst]))
-                if edge_key not in added_edges:
-                    G.add_edge(src_node_id, link.dst)
-                    added_edges.add(edge_key)
+            if link.is_reverse:
+                continue
+            edge_key = (src_node_id, link.dst)
+            if edge_key in added_edges:
+                continue
+            G.add_edge(src_node_id, link.dst)
+            added_edges.add(edge_key)
+            edge_attrs[edge_key] = (link.distance, link.capacity)
     # 绘制图形
     plt.figure(figsize=(16, 12))
     nx.draw_networkx_nodes(G,
@@ -632,15 +636,29 @@ def visualize_network(nodes,
                            node_color=node_colors,
                            node_size=node_sizes,
                            alpha=0.9)
-    nx.draw_networkx_edges(G, pos, width=1.0, alpha=0.5, edge_color='gray')
+    nx.draw_networkx_edges(G,
+                           pos,
+                           width=1.0,
+                           alpha=0.5,
+                           edge_color='gray',
+                           arrows=True,
+                           arrowstyle='-|>',
+                           arrowsize=12)
     nx.draw_networkx_labels(G,
                             pos,
                             node_labels,
                             font_size=8,
                             font_color='black')
 
-    # 绘制边的流量标注
-    nx.draw_networkx_edge_labels(G, pos, font_size=7)
+    # 绘制边的容量标注
+    edge_labels = {}
+    for u, v in G.edges():
+        attrs = edge_attrs.get((u, v), edge_attrs.get((v, u)))
+        if attrs is None:
+            continue
+        distance, capacity = attrs
+        edge_labels[(u, v)] = f"{distance:.2f}/\n{capacity:.2f}"
+    nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_size=7)
 
     # 添加图例
     legend_elements = [
