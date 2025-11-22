@@ -155,11 +155,7 @@ class Network:
                             previous_nodes[neighbor_id] = current_node_id
                             heapq.heappush(pq, (distance, neighbor_id))
 
-            costs = {
-                node_id: distances[node_id] * min_capacity
-                for node_id in self.nodes
-            }
-        return distances, previous_nodes, costs
+        return distances, previous_nodes
 
     def successive_shortest_paths(self,
                                   source: int,

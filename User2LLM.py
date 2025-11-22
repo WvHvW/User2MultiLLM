@@ -403,9 +403,9 @@ def no_split(network, users, llms, user_ideal_llms):
     remaining = total_bw
     while remaining >= 1e-9:
         push = 500
-        dist, prev, _ = network_copy.dijkstra_with_capacity(S,
-                                                            min_capacity=push,
-                                                            target_id=T)
+        dist, prev = network_copy.dijkstra_with_capacity(S,
+                                                         min_capacity=push,
+                                                         target_id=T)
 
         # 如果此时已经无法为剩余流量找到可行路径，则舍弃剩余流量
         if dist[T] == float('inf'):
@@ -461,9 +461,9 @@ def k_split(network, users, llms, k):
     remaining = total_bw
     while remaining >= 1e-9:
         push = min(k, remaining)
-        dist, prev, _ = network_copy.dijkstra_with_capacity(S,
-                                                            min_capacity=push,
-                                                            target_id=T)
+        dist, prev = network_copy.dijkstra_with_capacity(S,
+                                                         min_capacity=push,
+                                                         target_id=T)
 
         # 如果此时已经无法为剩余流量找到可行路径，则舍弃剩余流量
         if dist[T] == float('inf'):
