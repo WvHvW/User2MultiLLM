@@ -621,27 +621,27 @@ if __name__ == "__main__":
             # 初始化运行时间记录字典
             runtime_data = {}
 
-            # # no_split
-            # start_time = time.time()
-            # no_split_allocations, no_split_network = no_split(
-            #     network, users, llms, user_ideal_llms)
-            # runtime_data['no-split'] = time.time() - start_time
-            # network.reset_network(llms)
+            # no_split
+            start_time = time.time()
+            no_split_allocations, no_split_network = no_split(
+                network, users, llms, user_ideal_llms)
+            runtime_data['no-split'] = time.time() - start_time
+            network.reset_network(llms)
 
-            # # k_split
-            # ks = [1, 2, 4, 5, 10, 20, 25, 50, 100, 250]
-            # k_split_results = {kid: None for kid in ks}
-            # k_split_networks = {kid: None for kid in ks}
-            # for split_k in ks:
-            #     start_time = time.time()
-            #     k_split_allocations, k_split_network = k_split(network,
-            #                                                    users,
-            #                                                    llms,
-            #                                                    k=split_k)
-            #     runtime_data[f'k-split-{split_k}'] = time.time() - start_time
-            #     k_split_results[split_k] = k_split_allocations
-            #     k_split_networks[split_k] = k_split_network
-            #     network.reset_network(llms)
+            # k_split
+            ks = [1, 2, 4, 5, 10, 20, 25, 50, 100, 250]
+            k_split_results = {kid: None for kid in ks}
+            k_split_networks = {kid: None for kid in ks}
+            for split_k in ks:
+                start_time = time.time()
+                k_split_allocations, k_split_network = k_split(network,
+                                                               users,
+                                                               llms,
+                                                               k=split_k)
+                runtime_data[f'k-split-{split_k}'] = time.time() - start_time
+                k_split_results[split_k] = k_split_allocations
+                k_split_networks[split_k] = k_split_network
+                network.reset_network(llms)
 
             # k_split_augment（启用trace）
             ks = [1, 2, 4, 5, 10, 20, 25, 50, 100, 250]
