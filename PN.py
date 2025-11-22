@@ -263,7 +263,7 @@ def assign_user_nodes_by_distribution(G, distribution_type='uniform'):
 
     # 定义用户节点的配置
     user_choices = [{
-        'num': 60,
+        'num': 80,
         'num_users': 100,
         'cpu_demand': 4,
         'mem_demand': 8,
@@ -330,7 +330,8 @@ def assign_user_nodes_by_distribution(G, distribution_type='uniform'):
             k = int(distance_to_center / 5)  # 缩放因子5
             # 计算泊松概率 P(k; λ) = (λ^k * e^(-λ)) / k!
             from math import factorial, exp
-            poisson_prob = (lambda_param**k * exp(-lambda_param)) / factorial(k)
+            poisson_prob = (lambda_param**k *
+                            exp(-lambda_param)) / factorial(k)
             weights.append(poisson_prob)
         weights = np.array(weights)
     else:
@@ -405,7 +406,7 @@ def assign_llm_nodes_by_distribution(G,
                     del G.nodes[n][attr]
 
     # 定义LLM候选节点的配置
-    llm_choices = [{'num': 15, 'cpu_capacity': 18, 'mem_capacity': 16}]
+    llm_choices = [{'num': 16, 'cpu_capacity': 24, 'mem_capacity': 16}]
 
     # 计算总的LLM节点数量
     total_llm_nodes = sum(choice['num'] for choice in llm_choices)
@@ -473,7 +474,8 @@ def assign_llm_nodes_by_distribution(G,
             k = int(distance_to_center / 5)  # 缩放因子5
             # 计算泊松概率 P(k; λ) = (λ^k * e^(-λ)) / k!
             from math import factorial, exp
-            poisson_prob = (lambda_param**k * exp(-lambda_param)) / factorial(k)
+            poisson_prob = (lambda_param**k *
+                            exp(-lambda_param)) / factorial(k)
             weights.append(poisson_prob)
         weights = np.array(weights)
     else:
@@ -537,7 +539,7 @@ else:
     print("=" * 50)
     print("使用随机生成网络")
     print("=" * 50)
-    Graph, common_nodes = generate_city_network(num_nodes=150, target_degree=6)
+    Graph, common_nodes = generate_city_network(num_nodes=200, target_degree=6)
 
 # 根据不同分布类型分配节点并保存结果
 distribution_types = ['uniform', 'power_law', 'sparse', 'gaussian', 'poisson']

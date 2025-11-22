@@ -303,65 +303,104 @@ def write_ssp_trace(file_path, all_trace_data):
                 continue
 
             iteration_rows.append({
-                'distribution': distribution,
-                'k': k,
-                'iteration': t.get('iteration', 0),
-                'push_amount': t.get('push_amount', 0),
-                'remaining_after': t.get('remaining_after', 0),
+                'distribution':
+                distribution,
+                'k':
+                k,
+                'iteration':
+                t.get('iteration', 0),
+                'push_amount':
+                t.get('push_amount', 0),
+                'remaining_after':
+                t.get('remaining_after', 0),
 
                 # 路径特征
-                'path_length': t.get('path_length', 0),
-                'path_cost_per_unit': t.get('path_cost_per_unit', 0),
-                'user_id': t.get('user_id', -1),
-                'llm_id': t.get('llm_id', -1),
+                'path_length':
+                t.get('path_length', 0),
+                'path_cost_per_unit':
+                t.get('path_cost_per_unit', 0),
+                'user_id':
+                t.get('user_id', -1),
+                'llm_id':
+                t.get('llm_id', -1),
 
                 # 反向边统计（核心）
-                'reverse_edge_count': t.get('reverse_edge_count', 0),
-                'has_reverse_edge': t.get('has_reverse_edge', 0),
-                'reverse_flow': t.get('reverse_flow', 0),
+                'reverse_edge_count':
+                t.get('reverse_edge_count', 0),
+                'has_reverse_edge':
+                t.get('has_reverse_edge', 0),
+                'reverse_flow':
+                t.get('reverse_flow', 0),
 
                 # 网络状态
-                'residual_edges_available': t.get('residual_edges_available', 0),
-                'saturated_edges': t.get('saturated_edges', 0),
+                'residual_edges_available':
+                t.get('residual_edges_available', 0),
+                'saturated_edges':
+                t.get('saturated_edges', 0),
 
                 # 性能
-                'nodes_explored': t.get('nodes_explored', 0),
-                'max_potential_change': t.get('max_potential_change', 0),
+                'nodes_explored':
+                t.get('nodes_explored', 0),
+                'max_potential_change':
+                t.get('max_potential_change', 0),
 
                 # 费用
-                'real_cost': t.get('real_cost', 0),
+                'real_cost':
+                t.get('real_cost', 0),
             })
 
         # 汇总统计
         success_traces = [t for t in trace_log if t.get('status') == 'success']
         if success_traces:
             total_iters = len(success_traces)
-            total_reverse_uses = sum(t.get('reverse_edge_count', 0) for t in success_traces)
-            iters_with_reverse = sum(1 for t in success_traces if t.get('has_reverse_edge', 0))
+            total_reverse_uses = sum(
+                t.get('reverse_edge_count', 0) for t in success_traces)
+            iters_with_reverse = sum(1 for t in success_traces
+                                     if t.get('has_reverse_edge', 0))
             total_flow = sum(t.get('push_amount', 0) for t in success_traces)
-            total_reverse_flow = sum(t.get('reverse_flow', 0) for t in success_traces)
+            total_reverse_flow = sum(
+                t.get('reverse_flow', 0) for t in success_traces)
             total_cost = sum(t.get('real_cost', 0) for t in success_traces)
-            avg_path_length = sum(t.get('path_length', 0) for t in success_traces) / total_iters
+            avg_path_length = sum(
+                t.get('path_length', 0) for t in success_traces) / total_iters
 
             summary_rows.append({
-                'distribution': distribution,
-                'k': k,
-                'total_iterations': total_iters,
-                'total_flow': total_flow,
-                'total_cost': total_cost,
-                'avg_path_length': avg_path_length,
+                'distribution':
+                distribution,
+                'k':
+                k,
+                'total_iterations':
+                total_iters,
+                'total_flow':
+                total_flow,
+                'total_cost':
+                total_cost,
+                'avg_path_length':
+                avg_path_length,
 
                 # 反向边汇总
-                'total_reverse_edge_uses': total_reverse_uses,
-                'iters_with_reverse_edge': iters_with_reverse,
-                'reverse_iter_ratio': iters_with_reverse / total_iters if total_iters > 0 else 0,
-                'total_reverse_flow': total_reverse_flow,
-                'reverse_flow_ratio': total_reverse_flow / total_flow if total_flow > 0 else 0,
+                'total_reverse_edge_uses':
+                total_reverse_uses,
+                'iters_with_reverse_edge':
+                iters_with_reverse,
+                'reverse_iter_ratio':
+                iters_with_reverse / total_iters if total_iters > 0 else 0,
+                'total_reverse_flow':
+                total_reverse_flow,
+                'reverse_flow_ratio':
+                total_reverse_flow / total_flow if total_flow > 0 else 0,
 
                 # 平均网络状态
-                'avg_residual_edges': sum(t.get('residual_edges_available', 0) for t in success_traces) / total_iters,
-                'avg_saturated_edges': sum(t.get('saturated_edges', 0) for t in success_traces) / total_iters,
-                'avg_nodes_explored': sum(t.get('nodes_explored', 0) for t in success_traces) / total_iters,
+                'avg_residual_edges':
+                sum(
+                    t.get('residual_edges_available', 0)
+                    for t in success_traces) / total_iters,
+                'avg_saturated_edges':
+                sum(t.get('saturated_edges', 0)
+                    for t in success_traces) / total_iters,
+                'avg_nodes_explored':
+                sum(t.get('nodes_explored', 0)
+                    for t in success_traces) / total_iters,
             })
 
     # 写入Excel
@@ -525,7 +564,9 @@ def k_split_augment(network, users, llms, k, trace=False):
         net.successive_shortest_paths(S, T, total_bw, k=k, trace=False)
         trace_log = []
 
-    allocations = net.decompose_flow_paths(S, T, algorithm_name=f"{k}-split-augment")
+    allocations = net.decompose_flow_paths(S,
+                                           T,
+                                           algorithm_name=f"{k}-split-augment")
 
     # 基于最终流量结果扣减 LLM 计算资源
     if is_shared and single_bw > 0:
@@ -580,27 +621,27 @@ if __name__ == "__main__":
             # 初始化运行时间记录字典
             runtime_data = {}
 
-            # no_split
-            start_time = time.time()
-            no_split_allocations, no_split_network = no_split(
-                network, users, llms, user_ideal_llms)
-            runtime_data['no-split'] = time.time() - start_time
-            network.reset_network(llms)
+            # # no_split
+            # start_time = time.time()
+            # no_split_allocations, no_split_network = no_split(
+            #     network, users, llms, user_ideal_llms)
+            # runtime_data['no-split'] = time.time() - start_time
+            # network.reset_network(llms)
 
-            # k_split
-            ks = [1, 2, 4, 5, 10, 20, 25, 50, 100, 250]
-            k_split_results = {kid: None for kid in ks}
-            k_split_networks = {kid: None for kid in ks}
-            for split_k in ks:
-                start_time = time.time()
-                k_split_allocations, k_split_network = k_split(network,
-                                                               users,
-                                                               llms,
-                                                               k=split_k)
-                runtime_data[f'k-split-{split_k}'] = time.time() - start_time
-                k_split_results[split_k] = k_split_allocations
-                k_split_networks[split_k] = k_split_network
-                network.reset_network(llms)
+            # # k_split
+            # ks = [1, 2, 4, 5, 10, 20, 25, 50, 100, 250]
+            # k_split_results = {kid: None for kid in ks}
+            # k_split_networks = {kid: None for kid in ks}
+            # for split_k in ks:
+            #     start_time = time.time()
+            #     k_split_allocations, k_split_network = k_split(network,
+            #                                                    users,
+            #                                                    llms,
+            #                                                    k=split_k)
+            #     runtime_data[f'k-split-{split_k}'] = time.time() - start_time
+            #     k_split_results[split_k] = k_split_allocations
+            #     k_split_networks[split_k] = k_split_network
+            #     network.reset_network(llms)
 
             # k_split_augment（启用trace）
             ks = [1, 2, 4, 5, 10, 20, 25, 50, 100, 250]
@@ -610,9 +651,14 @@ if __name__ == "__main__":
 
             for split_k in ks:
                 start_time = time.time()
-                result = k_split_augment(network, users, llms, k=split_k, trace=True)
+                result = k_split_augment(network,
+                                         users,
+                                         llms,
+                                         k=split_k,
+                                         trace=True)
                 augment_allocations, augment_network, trace_log = result
-                runtime_data[f'k-split-augment-{split_k}'] = time.time() - start_time
+                runtime_data[f'k-split-augment-{split_k}'] = time.time(
+                ) - start_time
                 augment_results[split_k] = augment_allocations
                 augment_networks[split_k] = augment_network
 

@@ -164,7 +164,7 @@ class Network:
                                   k: int = 1,
                                   trace: bool = False):
         """
-        最小费用流：Successive Shortest Paths with reduced cost（节点势）
+        最小费用流：Successive Shortest Paths using SPFA (无势能优化)
 
         参数:
             source: 源节点ID
@@ -177,15 +177,10 @@ class Network:
             allocations: 分配结果列表，每条记录含 'path','cost','flow'
             如果trace=True，则返回 (allocations, trace_log)
         """
-        import math, heapq
+        import math
+        from collections import deque
         INF = math.inf
-
-        # 节点势（初始化或使用持久化的值）
-        if not self.node_potential:
-            # 第一次调用或重置后，初始化为 0
-            self.node_potential = {nid: 0.0 for nid in self.nodes}
-
-        pi = self.node_potential  # 直接使用持久化的势能引用
+        EPSILON = 1e-9
 
         allocations = []
         trace_log = [] if trace else None
@@ -196,41 +191,26 @@ class Network:
             iteration += 1
             push = min(k, remaining)
 
-            # # 调试输出
-            # if iteration % 10 == 1 or iteration <= 5:
-            #     print(
-            #         f"  [SSP] 迭代 {iteration}: remaining={remaining:.1f}, push={push:.1f}"
-            #     )
-
-            # # 接近完成时输出详细信息
-            # if remaining <= 100:
-            #     print(f"  [SSP] 迭代 {iteration}: remaining={remaining:.1f}, 进入Dijkstra...")
-
-            # ---------- Dijkstra with reduced cost ----------
+            # ---------- SPFA (队列优化的Bellman-Ford) ----------
+            # 不使用势能，直接在原始cost上运行
             dist = {nid: INF for nid in self.nodes}
             prev = {nid: None for nid in self.nodes}
+            in_queue = {nid: False for nid in self.nodes}
+            relax_count = {nid: 0 for nid in self.nodes}  # 松弛次数，用于检测负环
+
             dist[source] = 0
-            pq = [(0, source)]
+            queue = deque([source])
+            in_queue[source] = True
 
-            # 记录Dijkstra搜索的节点数（用于性能分析）
-            nodes_explored = 0
-            EPSILON = 1e-9  # 浮点数精度保护
+            # SPFA主循环
+            while queue:
+                u = queue.popleft()
+                in_queue[u] = False
 
-            while pq:
-
-                d, u = heapq.heappop(pq)
-                if d > dist[u] + EPSILON:
-                    continue
-
-                # 提前终止：找到汇点即停止（与dijkstra_with_capacity保持一致）
-                if u == sink:
-                    break
-
-                nodes_explored += 1
-
-                # 保护3：限制探索节点数，防止死循环
-                if nodes_explored > len(self.nodes)**2:
-                    print(f"  [SSP] 警告: 探索节点过多 ({nodes_explored}), 终止Dijkstra")
+                # 负环检测：如果某个节点被松弛超过V次，说明有负环
+                if relax_count[u] > len(self.nodes):
+                    print(f"  [SSP] 警告: 检测到负环，迭代 {iteration}")
+                    # 不退出，继续尝试（可能是暂时的负reduced cost）
                     break
 
                 for link in self.links.get(u, []):
@@ -238,22 +218,23 @@ class Network:
                     # 固定粒度：只考虑容量>=push的边
                     if rc < push:
                         continue
+
                     v = link.dst
-                    # reduced cost
-                    raw_cost = (link.distance if not link.is_reverse else
-                                -link.reverse.distance)
-                    cost = raw_cost + pi[u] - pi[v]
+                    # 使用真实cost（不使用势能）
+                    # 反向边的cost是负的
+                    cost = link.distance if not link.is_reverse else -link.reverse.distance
 
                     if dist[u] + cost < dist[v] - EPSILON:
                         dist[v] = dist[u] + cost
                         prev[v] = (u, link)
-                        heapq.heappush(pq, (dist[v], v))
+                        relax_count[v] += 1
 
-            # # 接近完成时输出 Dijkstra 统计信息
-            # if remaining <= 100:
-            #     print(f"  [SSP] Dijkstra完成: nodes_explored={nodes_explored}, max_pq_size={max_pq_size}, dist[sink]={'INF' if dist[sink]==INF else f'{dist[sink]:.2f}'}")
+                        # 如果v不在队列中，加入队列
+                        if not in_queue[v]:
+                            queue.append(v)
+                            in_queue[v] = True
 
-            # 如果无法找到增广路径，终止算法（残余网络k-容量已耗尽）
+            # 如果无法找到增广路径，终止算法
             if dist[sink] == INF:
                 print(f"  [SSP] 迭代 {iteration}: 无增广路, 舍弃剩余流量 {remaining:.1f}")
                 if trace:
@@ -261,8 +242,7 @@ class Network:
                         'iteration': iteration,
                         'status': 'no_augmenting_path',
                         'remaining_flow': remaining,
-                        'push_amount': push,
-                        'nodes_explored': nodes_explored
+                        'push_amount': push
                     })
                 break
 
@@ -293,10 +273,9 @@ class Network:
                     })
 
             # ---------- 真正推流 ----------
-            # 固定粒度：直接推送push单位
-            reduced_cost_path = dist[sink]
+            path_cost = dist[sink]  # 真实cost（非reduced cost）
             self.send_flow(link_path, push)
-            real_cost = (reduced_cost_path + pi[sink] - pi[source]) * push
+            real_cost = path_cost * push
 
             # # 接近完成时输出推流信息
             # if remaining <= 100:
@@ -329,11 +308,6 @@ class Network:
                         if not lk.is_reverse and lk.flow >= lk.capacity - 1e-6:
                             saturated_edges_count += 1
 
-                # 计算节点势能最大变化量
-                max_potential_change = max(
-                    (dist[nid] for nid in self.nodes if dist[nid] < INF),
-                    default=0)
-
                 trace_log.append({
                     'iteration':
                     iteration,
@@ -348,7 +322,7 @@ class Network:
                     'path_length':
                     len(link_path),
                     'path_cost_per_unit':
-                    reduced_cost_path + pi[sink] - pi[source],
+                    path_cost,
                     'user_id':
                     node_path[1],
                     'llm_id':
@@ -368,31 +342,10 @@ class Network:
                     'saturated_edges':
                     saturated_edges_count,
 
-                    # Dijkstra性能
-                    'nodes_explored':
-                    nodes_explored,
-
-                    # 势能变化
-                    'max_potential_change':
-                    max_potential_change,
-
                     # 原有详细信息（用于深入分析）
-                    'node_path':
-                    node_path,
-                    'reduced_cost':
-                    reduced_cost_path,
-                    'real_cost':
-                    real_cost,
                     'link_details':
-                    link_details,
+                    link_details
                 })
-
-            # ---------- 更新节点势 ----------
-            updated_count = 0
-            for nid in self.nodes:
-                if dist[nid] < INF:
-                    pi[nid] += dist[nid]
-                    updated_count += 1
 
         if trace:
             return allocations, trace_log
