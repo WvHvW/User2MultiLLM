@@ -497,6 +497,7 @@ if __name__ == "__main__":
                 network.reset_network(llms)
 
             # k_split_augment
+            ks = [1, 2, 4, 5, 10, 20, 25, 50, 100, 250]
             augment_results = {kid: None for kid in ks}
             augment_networks = {kid: None for kid in ks}
             for split_k in ks:

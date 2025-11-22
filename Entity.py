@@ -216,15 +216,9 @@ class Network:
 
             # 记录Dijkstra搜索的节点数（用于性能分析）
             nodes_explored = 0
-            max_pq_size = 0
             EPSILON = 1e-9  # 浮点数精度保护
 
             while pq:
-                # 保护1：限制优先队列大小，防止爆炸
-                max_pq_size = max(max_pq_size, len(pq))
-                if len(pq) > 10000:
-                    print(f"  [SSP] 警告: 优先队列过大 ({len(pq)}), 可能存在负环")
-                    break
 
                 d, u = heapq.heappop(pq)
                 if d > dist[u] + EPSILON:  # 保护2：浮点精度容差
@@ -233,21 +227,21 @@ class Network:
                 nodes_explored += 1
 
                 # 保护3：限制探索节点数，防止死循环
-                if nodes_explored > len(self.nodes) * 100:
+                if nodes_explored > len(self.nodes)**2:
                     print(f"  [SSP] 警告: 探索节点过多 ({nodes_explored}), 终止Dijkstra")
                     break
 
                 for link in self.links.get(u, []):
                     rc = link.residual_capacity
-                    if rc < push:  # 浮点精度保护
+                    # 固定粒度：只考虑容量>=push的边
+                    if rc < push:
                         continue
                     v = link.dst
-                    # reduced cost（允许使用由残余边构成的负环）
+                    # reduced cost
                     raw_cost = (link.distance if not link.is_reverse else
                                 -link.reverse.distance)
                     cost = raw_cost + pi[u] - pi[v]
 
-                    # 保护4：只有显著改进才松弛，避免微小浮点差异导致反复入队
                     if dist[u] + cost < dist[v] - EPSILON:
                         dist[v] = dist[u] + cost
                         prev[v] = (u, link)
@@ -298,6 +292,7 @@ class Network:
                     })
 
             # ---------- 真正推流 ----------
+            # 固定粒度：直接推送push单位
             reduced_cost_path = dist[sink]
             self.send_flow(link_path, push)
             real_cost = (reduced_cost_path + pi[sink] - pi[source]) * push
@@ -337,12 +332,6 @@ class Network:
                 if dist[nid] < INF:
                     pi[nid] += dist[nid]
                     updated_count += 1
-
-            # # 接近完成时输出势能更新信息
-            # if remaining <= 100:
-            #     print(
-            #         f"  [SSP] 势能更新完成: updated_nodes={updated_count}/{len(self.nodes)}, 迭代{iteration}结束\n"
-            #     )
 
         if trace:
             return allocations, trace_log
