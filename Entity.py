@@ -135,11 +135,13 @@ class Network:
         while pq:
             current_distance, current_node_id = heapq.heappop(pq)
 
-            if target_id is not None and current_node_id == target_id:
-                break
-
+            # 先检查是否过时，再检查是否到达目标
             if current_distance > distances[current_node_id]:
                 continue
+
+            # 提前终止：找到目标节点即停止（距离已确认最优）
+            if target_id is not None and current_node_id == target_id:
+                break
 
             if current_node_id in self.links:
                 for link in self.links[current_node_id]:
@@ -221,8 +223,12 @@ class Network:
             while pq:
 
                 d, u = heapq.heappop(pq)
-                if d > dist[u] + EPSILON:  # 保护2：浮点精度容差
+                if d > dist[u] + EPSILON:
                     continue
+
+                # 提前终止：找到汇点即停止（与dijkstra_with_capacity保持一致）
+                if u == sink:
+                    break
 
                 nodes_explored += 1
 
@@ -251,8 +257,7 @@ class Network:
             # if remaining <= 100:
             #     print(f"  [SSP] Dijkstra完成: nodes_explored={nodes_explored}, max_pq_size={max_pq_size}, dist[sink]={'INF' if dist[sink]==INF else f'{dist[sink]:.2f}'}")
 
-            # 如果此轮无法从 source 到 sink 找到可行增广路，
-            # 直接终止循环，剩余未分配流量视为舍弃
+            # 如果无法找到增广路径，终止算法（残余网络k-容量已耗尽）
             if dist[sink] == INF:
                 print(f"  [SSP] 迭代 {iteration}: 无增广路, 舍弃剩余流量 {remaining:.1f}")
                 if trace:
@@ -313,17 +318,77 @@ class Network:
 
             # ---------- 记录中介变量 ----------
             if trace:
+                # 反向边统计
+                reverse_edges = [lk for lk in link_path if lk.is_reverse]
+                reverse_edge_count = len(reverse_edges)
+                reverse_flow = push if reverse_edge_count > 0 else 0
+
+                # 统计当前网络状态：可用残余边数量、饱和边数量
+                residual_edges_count = 0
+                saturated_edges_count = 0
+                for links in self.links.values():
+                    for lk in links:
+                        if lk.residual_capacity >= push:
+                            residual_edges_count += 1
+                        if not lk.is_reverse and lk.flow >= lk.capacity - 1e-6:
+                            saturated_edges_count += 1
+
+                # 计算节点势能最大变化量
+                max_potential_change = max(
+                    (dist[nid] for nid in self.nodes if dist[nid] < INF),
+                    default=0)
+
                 trace_log.append({
-                    'iteration': iteration,
-                    'status': 'success',
-                    'push_amount': push,
-                    'remaining_after': remaining,
-                    'node_path': node_path,
-                    'reduced_cost': reduced_cost_path,
-                    'real_cost': real_cost,
-                    'node_potentials_before': pi.copy(),
-                    'link_details': link_details,
-                    'nodes_explored': nodes_explored
+                    'iteration':
+                    iteration,
+                    'status':
+                    'success',
+                    'push_amount':
+                    push,
+                    'remaining_after':
+                    remaining,
+
+                    # 路径特征
+                    'path_length':
+                    len(link_path),
+                    'path_cost_per_unit':
+                    reduced_cost_path + pi[sink] - pi[source],
+                    'user_id':
+                    node_path[1],
+                    'llm_id':
+                    node_path[-2],
+
+                    # 反向边统计（核心指标）
+                    'reverse_edge_count':
+                    reverse_edge_count,
+                    'has_reverse_edge':
+                    1 if reverse_edge_count > 0 else 0,
+                    'reverse_flow':
+                    reverse_flow,
+
+                    # 网络状态
+                    'residual_edges_available':
+                    residual_edges_count,
+                    'saturated_edges':
+                    saturated_edges_count,
+
+                    # Dijkstra性能
+                    'nodes_explored':
+                    nodes_explored,
+
+                    # 势能变化
+                    'max_potential_change':
+                    max_potential_change,
+
+                    # 原有详细信息（用于深入分析）
+                    'node_path':
+                    node_path,
+                    'reduced_cost':
+                    reduced_cost_path,
+                    'real_cost':
+                    real_cost,
+                    'link_details':
+                    link_details,
                 })
 
             # ---------- 更新节点势 ----------
