@@ -245,10 +245,10 @@ def create_custom_network():
 def assign_user_nodes_by_distribution(G, distribution_type='uniform'):
     """
     根据指定的分布类型分配用户节点
-    
+
     Parameters:
     G: NetworkX图对象
-    distribution_type: 分布类型 ('uniform', 'sparse', 'gaussian', 'power_law')
+    distribution_type: 分布类型 ('uniform', 'sparse', 'gaussian', 'power_law', 'poisson')
     """
 
     # 获取所有节点ID
@@ -317,6 +317,22 @@ def assign_user_nodes_by_distribution(G, distribution_type='uniform'):
             weight = 1 / (distance_to_center + 1e-5)**1.5
             weights.append(weight)
         weights = np.array(weights)
+    elif distribution_type == 'poisson':
+        # 泊松分布，基于距离中心的远近计算泊松概率权重
+        center_x, center_y = 50, 50
+        lambda_param = 8  # 泊松分布参数，控制分布形状
+        weights = []
+        for node_id in all_nodes:
+            pos = G.nodes[node_id]['pos']
+            distance_to_center = np.sqrt((pos[0] - center_x)**2 +
+                                         (pos[1] - center_y)**2)
+            # 将距离映射到泊松分布的k值 (0到最大距离约70映射到0-14)
+            k = int(distance_to_center / 5)  # 缩放因子5
+            # 计算泊松概率 P(k; λ) = (λ^k * e^(-λ)) / k!
+            from math import factorial, exp
+            poisson_prob = (lambda_param**k * exp(-lambda_param)) / factorial(k)
+            weights.append(poisson_prob)
+        weights = np.array(weights)
     else:
         raise ValueError("不支持的分布类型")
 
@@ -369,10 +385,10 @@ def assign_llm_nodes_by_distribution(G,
                                      user_nodes=None):
     """
     根据指定的分布类型分配LLM候选节点
-    
+
     Parameters:
     G: NetworkX图对象
-    distribution_type: 分布类型 ('uniform', 'sparse', 'gaussian', 'power_law')
+    distribution_type: 分布类型 ('uniform', 'sparse', 'gaussian', 'power_law', 'poisson')
     user_nodes: 已分配的用户节点列表，确保LLM节点与用户节点不重叠
     """
 
@@ -444,6 +460,22 @@ def assign_llm_nodes_by_distribution(G,
             weight = 1 / (distance_to_center + 1e-5)**1.5
             weights.append(weight)
         weights = np.array(weights)
+    elif distribution_type == 'poisson':
+        # 泊松分布，基于距离中心的远近计算泊松概率权重
+        center_x, center_y = 50, 50
+        lambda_param = 8  # 泊松分布参数，控制分布形状
+        weights = []
+        for node_id in available_nodes:
+            pos = G.nodes[node_id]['pos']
+            distance_to_center = np.sqrt((pos[0] - center_x)**2 +
+                                         (pos[1] - center_y)**2)
+            # 将距离映射到泊松分布的k值 (0到最大距离约70映射到0-14)
+            k = int(distance_to_center / 5)  # 缩放因子5
+            # 计算泊松概率 P(k; λ) = (λ^k * e^(-λ)) / k!
+            from math import factorial, exp
+            poisson_prob = (lambda_param**k * exp(-lambda_param)) / factorial(k)
+            weights.append(poisson_prob)
+        weights = np.array(weights)
     else:
         raise ValueError("不支持的分布类型")
 
@@ -508,7 +540,7 @@ else:
     Graph, common_nodes = generate_city_network(num_nodes=150, target_degree=6)
 
 # 根据不同分布类型分配节点并保存结果
-distribution_types = ['uniform', 'power_law', 'sparse', 'gaussian']
+distribution_types = ['uniform', 'power_law', 'sparse', 'gaussian', 'poisson']
 user_data = {}
 llm_data = {dist: {} for dist in distribution_types}
 
