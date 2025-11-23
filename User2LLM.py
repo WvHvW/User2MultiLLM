@@ -18,7 +18,6 @@ origin_file = os.path.join(_RESULT_DIR, 'OriginResults.xlsx')
 dash_file = os.path.join(_RESULT_DIR, 'DashBoard.xlsx')
 link_util_file = os.path.join(_RESULT_DIR, 'LinkUtilization.xlsx')
 runtime_file = os.path.join(_RESULT_DIR, 'runtime.xlsx')
-ssp_trace_file = os.path.join(_RESULT_DIR, 'SSPTrace.xlsx')
 
 
 def merge_allocations_by_path(allocations):
@@ -280,140 +279,6 @@ def write_runtime_report(file_path, sheet_name, runtime_data):
         df.to_excel(writer, sheet_name=sheet_name, index=False)
 
 
-def write_ssp_trace(file_path, all_trace_data):
-    """
-    保存SSP算法的中介变量追踪数据
-
-    参数:
-        file_path: Excel 文件路径
-        all_trace_data: 列表，每项包含 (distribution, k, trace_log)
-    """
-    # 迭代级别数据
-    iteration_rows = []
-    # 汇总级别数据
-    summary_rows = []
-
-    for distribution, k, trace_log in all_trace_data:
-        if not trace_log:
-            continue
-
-        # 处理每个迭代的数据
-        for t in trace_log:
-            if t.get('status') != 'success':
-                continue
-
-            iteration_rows.append({
-                'distribution':
-                distribution,
-                'k':
-                k,
-                'iteration':
-                t.get('iteration', 0),
-                'push_amount':
-                t.get('push_amount', 0),
-                'remaining_after':
-                t.get('remaining_after', 0),
-
-                # 路径特征
-                'path_length':
-                t.get('path_length', 0),
-                'path_cost_per_unit':
-                t.get('path_cost_per_unit', 0),
-                'user_id':
-                t.get('user_id', -1),
-                'llm_id':
-                t.get('llm_id', -1),
-
-                # 反向边统计（核心）
-                'reverse_edge_count':
-                t.get('reverse_edge_count', 0),
-                'has_reverse_edge':
-                t.get('has_reverse_edge', 0),
-                'reverse_flow':
-                t.get('reverse_flow', 0),
-
-                # 网络状态
-                'residual_edges_available':
-                t.get('residual_edges_available', 0),
-                'saturated_edges':
-                t.get('saturated_edges', 0),
-
-                # 性能
-                'nodes_explored':
-                t.get('nodes_explored', 0),
-                'max_potential_change':
-                t.get('max_potential_change', 0),
-
-                # 费用
-                'real_cost':
-                t.get('real_cost', 0),
-            })
-
-        # 汇总统计
-        success_traces = [t for t in trace_log if t.get('status') == 'success']
-        if success_traces:
-            total_iters = len(success_traces)
-            total_reverse_uses = sum(
-                t.get('reverse_edge_count', 0) for t in success_traces)
-            iters_with_reverse = sum(1 for t in success_traces
-                                     if t.get('has_reverse_edge', 0))
-            total_flow = sum(t.get('push_amount', 0) for t in success_traces)
-            total_reverse_flow = sum(
-                t.get('reverse_flow', 0) for t in success_traces)
-            total_cost = sum(t.get('real_cost', 0) for t in success_traces)
-            avg_path_length = sum(
-                t.get('path_length', 0) for t in success_traces) / total_iters
-
-            summary_rows.append({
-                'distribution':
-                distribution,
-                'k':
-                k,
-                'total_iterations':
-                total_iters,
-                'total_flow':
-                total_flow,
-                'total_cost':
-                total_cost,
-                'avg_path_length':
-                avg_path_length,
-
-                # 反向边汇总
-                'total_reverse_edge_uses':
-                total_reverse_uses,
-                'iters_with_reverse_edge':
-                iters_with_reverse,
-                'reverse_iter_ratio':
-                iters_with_reverse / total_iters if total_iters > 0 else 0,
-                'total_reverse_flow':
-                total_reverse_flow,
-                'reverse_flow_ratio':
-                total_reverse_flow / total_flow if total_flow > 0 else 0,
-
-                # 平均网络状态
-                'avg_residual_edges':
-                sum(
-                    t.get('residual_edges_available', 0)
-                    for t in success_traces) / total_iters,
-                'avg_saturated_edges':
-                sum(t.get('saturated_edges', 0)
-                    for t in success_traces) / total_iters,
-                'avg_nodes_explored':
-                sum(t.get('nodes_explored', 0)
-                    for t in success_traces) / total_iters,
-            })
-
-    # 写入Excel
-    with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
-        if iteration_rows:
-            df_iter = pd.DataFrame(iteration_rows)
-            df_iter.to_excel(writer, sheet_name='IterationTrace', index=False)
-
-        if summary_rows:
-            df_summary = pd.DataFrame(summary_rows)
-            df_summary.to_excel(writer, sheet_name='Summary', index=False)
-
-
 def no_split(network, users, llms, user_ideal_llms):
     print("Starting no-split allocation")
     network_copy = copy.deepcopy(network)
@@ -531,7 +396,7 @@ def k_split(network, users, llms, k):
     return allocations, network_copy
 
 
-def k_split_augment(network, users, llms, k, trace=False):
+def k_split_augment(network, users, llms, k):
     print(f"进入了{k}-split-augment 算法")
     net = copy.deepcopy(network)
 
@@ -555,14 +420,8 @@ def k_split_augment(network, users, llms, k, trace=False):
         for lid, llm in llms.items():
             net.add_link(lid, T, total_bw, 0)
 
-    # 运行最小费用流，根据trace参数决定是否记录中介变量
-    if trace:
-        result = net.successive_shortest_paths(S, T, total_bw, k=k, trace=True)
-        # successive_shortest_paths返回(allocations, trace_log)当trace=True
-        trace_log = result[1] if isinstance(result, tuple) else []
-    else:
-        net.successive_shortest_paths(S, T, total_bw, k=k, trace=False)
-        trace_log = []
+    # 运行最小费用流
+    net.successive_shortest_paths(S, T, total_bw, k=k)
 
     allocations = net.decompose_flow_paths(S,
                                            T,
@@ -575,15 +434,10 @@ def k_split_augment(network, users, llms, k, trace=False):
             flow_units = allocation['flow'] / single_bw
             llms[llm_id].available_computation -= single_cpu * flow_units
 
-    if trace:
-        return allocations, net, trace_log
     return allocations, net
 
 
 if __name__ == "__main__":
-    # 收集所有分布的SSP trace数据
-    all_trace_data = []
-
     for user_distribution in DISTRIBUTION_TYPES:
         for llm_distribution in DISTRIBUTION_TYPES:
             # user_distribution = 'uniform'
@@ -643,7 +497,7 @@ if __name__ == "__main__":
                 k_split_networks[split_k] = k_split_network
                 network.reset_network(llms)
 
-            # k_split_augment（启用trace）
+            # k_split_augment
             ks = [1, 2, 4, 5, 10, 20, 25, 50, 100, 250]
             augment_results = {kid: None for kid in ks}
             augment_networks = {kid: None for kid in ks}
@@ -651,19 +505,13 @@ if __name__ == "__main__":
 
             for split_k in ks:
                 start_time = time.time()
-                result = k_split_augment(network,
-                                         users,
-                                         llms,
-                                         k=split_k,
-                                         trace=True)
-                augment_allocations, augment_network, trace_log = result
-                runtime_data[f'k-split-augment-{split_k}'] = time.time(
-                ) - start_time
+                augment_allocations, augment_network = k_split_augment(network,
+                                                                        users,
+                                                                        llms,
+                                                                        k=split_k)
+                runtime_data[f'k-split-augment-{split_k}'] = time.time() - start_time
                 augment_results[split_k] = augment_allocations
                 augment_networks[split_k] = augment_network
-
-                # 收集trace数据
-                all_trace_data.append((distribution_name, split_k, trace_log))
 
                 network.reset_network(llms)
 
@@ -725,8 +573,3 @@ if __name__ == "__main__":
                                  f'{user_distribution}-{llm_distribution}',
                                  runtime_data)
             print(f"Runtime report saved to {runtime_file}")
-
-    # 所有分布处理完成后，输出SSP trace数据
-    if all_trace_data:
-        write_ssp_trace(ssp_trace_file, all_trace_data)
-        print(f"SSP trace saved to {ssp_trace_file}")

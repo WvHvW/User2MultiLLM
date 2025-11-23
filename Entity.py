@@ -161,8 +161,7 @@ class Network:
                                   source: int,
                                   sink: int,
                                   max_flow: float,
-                                  k: int = 1,
-                                  trace: bool = False):
+                                  k: int = 1):
         """
         最小费用流：Successive Shortest Paths using SPFA (无势能优化)
 
@@ -171,11 +170,9 @@ class Network:
             sink: 汇节点ID
             max_flow: 最大流量
             k: 每次增广的流量单位
-            trace: 是否记录中介变量（用于调试和分析）
 
         返回:
             allocations: 分配结果列表，每条记录含 'path','cost','flow'
-            如果trace=True，则返回 (allocations, trace_log)
         """
         import math
         from collections import deque
@@ -183,7 +180,6 @@ class Network:
         EPSILON = 1e-9
 
         allocations = []
-        trace_log = [] if trace else None
         remaining = max_flow
         iteration = 0
 
@@ -237,13 +233,6 @@ class Network:
             # 如果无法找到增广路径，终止算法
             if dist[sink] == INF:
                 print(f"  [SSP] 迭代 {iteration}: 无增广路, 舍弃剩余流量 {remaining:.1f}")
-                if trace:
-                    trace_log.append({
-                        'iteration': iteration,
-                        'status': 'no_augmenting_path',
-                        'remaining_flow': remaining,
-                        'push_amount': push
-                    })
                 break
 
             # ---------- 提取路径 ----------
@@ -258,19 +247,6 @@ class Network:
             node_path.append(source)
             node_path.reverse()
             link_path.reverse()
-
-            link_details = []
-            if trace:
-                for lk in link_path:
-                    link_details.append({
-                        'src': lk.src,
-                        'dst': lk.dst,
-                        'is_reverse': lk.is_reverse,
-                        'capacity': lk.capacity,
-                        'flow_before': lk.flow,
-                        'residual_capacity': lk.residual_capacity,
-                        'distance': lk.distance
-                    })
 
             # ---------- 真正推流 ----------
             path_cost = dist[sink]  # 真实cost（非reduced cost）
@@ -291,64 +267,6 @@ class Network:
             })
             remaining -= push
 
-            # ---------- 记录中介变量 ----------
-            if trace:
-                # 反向边统计
-                reverse_edges = [lk for lk in link_path if lk.is_reverse]
-                reverse_edge_count = len(reverse_edges)
-                reverse_flow = push if reverse_edge_count > 0 else 0
-
-                # 统计当前网络状态：可用残余边数量、饱和边数量
-                residual_edges_count = 0
-                saturated_edges_count = 0
-                for links in self.links.values():
-                    for lk in links:
-                        if lk.residual_capacity >= push:
-                            residual_edges_count += 1
-                        if not lk.is_reverse and lk.flow >= lk.capacity - 1e-6:
-                            saturated_edges_count += 1
-
-                trace_log.append({
-                    'iteration':
-                    iteration,
-                    'status':
-                    'success',
-                    'push_amount':
-                    push,
-                    'remaining_after':
-                    remaining,
-
-                    # 路径特征
-                    'path_length':
-                    len(link_path),
-                    'path_cost_per_unit':
-                    path_cost,
-                    'user_id':
-                    node_path[1],
-                    'llm_id':
-                    node_path[-2],
-
-                    # 反向边统计（核心指标）
-                    'reverse_edge_count':
-                    reverse_edge_count,
-                    'has_reverse_edge':
-                    1 if reverse_edge_count > 0 else 0,
-                    'reverse_flow':
-                    reverse_flow,
-
-                    # 网络状态
-                    'residual_edges_available':
-                    residual_edges_count,
-                    'saturated_edges':
-                    saturated_edges_count,
-
-                    # 原有详细信息（用于深入分析）
-                    'link_details':
-                    link_details
-                })
-
-        if trace:
-            return allocations, trace_log
         return allocations
 
     def _find_flow_path(self, source, sink, remaining_flow):
