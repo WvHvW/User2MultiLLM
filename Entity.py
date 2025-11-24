@@ -161,7 +161,8 @@ class Network:
                                   source: int,
                                   sink: int,
                                   max_flow: float,
-                                  k: int = 1):
+                                  k: int = 1,
+                                  use_bottleneck: bool = False):
         """
         最小费用流：Successive Shortest Paths using SPFA (无势能优化)
 
@@ -169,10 +170,11 @@ class Network:
             source: 源节点ID
             sink: 汇节点ID
             max_flow: 最大流量
-            k: 每次增广的流量单位
+            k: 每次增广的流量单位（仅当 use_bottleneck=False 时使用）
+            use_bottleneck: 是否使用瓶颈流量推流（True则每次推送路径上的最小残余容量）
 
         返回:
-            allocations: 分配结果列表，每条记录含 'path','cost','flow'
+            (allocations, reverse_edge_count): 分配结果列表和反向边总数
         """
         import math
         from collections import deque
@@ -182,13 +184,11 @@ class Network:
         allocations = []
         remaining = max_flow
         iteration = 0
+        reverse_edge_total_flow = 0  # 统计反向边的总流量
 
         while remaining > 1e-9:
             iteration += 1
-            push = min(k, remaining)
 
-            # ---------- SPFA (队列优化的Bellman-Ford) ----------
-            # 不使用势能，直接在原始cost上运行
             dist = {nid: INF for nid in self.nodes}
             prev = {nid: None for nid in self.nodes}
             in_queue = {nid: False for nid in self.nodes}
@@ -211,13 +211,19 @@ class Network:
 
                 for link in self.links.get(u, []):
                     rc = link.residual_capacity
-                    # 固定粒度：只考虑容量>=push的边
-                    if rc < push:
-                        continue
+
+                    # 根据模式选择容量阈值
+                    if use_bottleneck:
+                        # 瓶颈模式：只要有残余容量即可
+                        if rc < EPSILON:
+                            continue
+                    else:
+                        # 固定粒度：只考虑容量>=push的边
+                        push_amount = min(k, remaining)
+                        if rc < push_amount:
+                            continue
 
                     v = link.dst
-                    # 使用真实cost（不使用势能）
-                    # 反向边的cost是负的
                     cost = link.distance if not link.is_reverse else -link.reverse.distance
 
                     if dist[u] + cost < dist[v] - EPSILON:
@@ -248,26 +254,61 @@ class Network:
             node_path.reverse()
             link_path.reverse()
 
+            # ---------- 计算推流量 ----------
+            if use_bottleneck:
+                # 瓶颈流量：路径上所有边的残余容量的最小值
+                bottleneck = min(lk.residual_capacity for lk in link_path)
+                push = min(remaining, bottleneck)
+            else:
+                # 固定粒度
+                push = min(k, remaining)
+
             # ---------- 真正推流 ----------
             path_cost = dist[sink]  # 真实cost（非reduced cost）
             self.send_flow(link_path, push)
             real_cost = path_cost * push
 
+            # 统计这条路径的反向边流量和正向边的物理指标（排除超源和超汇的边）
+            reverse_count = 0
+            physical_distance = 0
+            hops = 0
+
+            for i, lk in enumerate(link_path):
+                # 跳过第一条（S->user）和最后一条（llm->T）边
+                if i == 0 or i == len(link_path) - 1:
+                    continue
+
+                if lk.is_reverse:
+                    reverse_count += 1
+                else:
+                    physical_distance += lk.distance
+                    hops += 1
+
+            reverse_edge_total_flow += reverse_count * push  # 反向边数量 × 流量
+
             # # 接近完成时输出推流信息
             # if remaining <= 100:
             #     print(f"  [SSP] 推流完成: path_len={len(node_path)}, real_cost={real_cost:.2f}")
 
+            # 根据模式设置算法名
+            if use_bottleneck:
+                alg_name = "bottleneck-augment"
+            else:
+                alg_name = f"{k}-split-augment"
+
             allocations.append({
-                "algorithm": f"{k}-split-augment",
+                "algorithm": alg_name,
                 "user_id": node_path[1],  # 超源后第一跳即用户
                 "llm_id": node_path[-2],  # 超汇前最后一跳即LLM
                 "path": node_path[1:-1],
                 "cost": real_cost,
-                "flow": push
+                "flow": push,
+                "physical_distance": physical_distance,
+                "hops": hops
             })
             remaining -= push
 
-        return allocations
+        return allocations, reverse_edge_total_flow
 
     def _find_flow_path(self, source, sink, remaining_flow):
         queue = deque([source])

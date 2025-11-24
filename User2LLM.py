@@ -18,6 +18,7 @@ origin_file = os.path.join(_RESULT_DIR, 'OriginResults.xlsx')
 dash_file = os.path.join(_RESULT_DIR, 'DashBoard.xlsx')
 link_util_file = os.path.join(_RESULT_DIR, 'LinkUtilization.xlsx')
 runtime_file = os.path.join(_RESULT_DIR, 'runtime.xlsx')
+bottleneck_k_file = os.path.join(_RESULT_DIR, 'bottleneck-k.xlsx')
 
 
 def merge_allocations_by_path(allocations):
@@ -279,6 +280,207 @@ def write_runtime_report(file_path, sheet_name, runtime_data):
         df.to_excel(writer, sheet_name=sheet_name, index=False)
 
 
+def write_bottleneck_k_report(file_path, sheet_name, allocations):
+    """
+    保存 bottleneck-augment 每轮推流的瓶颈流量统计
+
+    参数:
+        file_path: Excel 文件路径
+        sheet_name: sheet 名称（格式：user_distribution-llm_distribution）
+        allocations: bottleneck-augment 的分配结果列表
+    """
+    if not allocations:
+        return
+
+    rows = []
+    for idx, alloc in enumerate(allocations):
+        path_str = '->'.join(map(str, alloc['path']))
+        rows.append({
+            'iteration': idx + 1,
+            'k_value': alloc['flow'],
+            'user_id': alloc['user_id'],
+            'llm_id': alloc['llm_id'],
+            'path': path_str,
+            'cost': alloc['cost']
+        })
+
+    df = pd.DataFrame(rows)
+
+    # 添加统计信息
+    k_values = [alloc['flow'] for alloc in allocations]
+    stats_rows = [
+        {'iteration': 'Total', 'k_value': sum(k_values), 'user_id': '',
+         'llm_id': '', 'path': f'{len(allocations)} iterations', 'cost': sum(alloc["cost"] for alloc in allocations)},
+        {'iteration': 'Mean', 'k_value': sum(k_values) / len(k_values) if k_values else 0,
+         'user_id': '', 'llm_id': '', 'path': '', 'cost': ''},
+        {'iteration': 'Min', 'k_value': min(k_values) if k_values else 0,
+         'user_id': '', 'llm_id': '', 'path': '', 'cost': ''},
+        {'iteration': 'Max', 'k_value': max(k_values) if k_values else 0,
+         'user_id': '', 'llm_id': '', 'path': '', 'cost': ''}
+    ]
+
+    df = pd.concat([df, pd.DataFrame(stats_rows)], ignore_index=True)
+
+    # 追加模式：如果文件存在则追加新 sheet，否则创建新文件
+    mode = 'a' if os.path.exists(file_path) else 'w'
+    kwargs = {'mode': mode, 'engine': 'openpyxl'}
+    if mode == 'a':
+        kwargs['if_sheet_exists'] = 'replace'
+
+    with pd.ExcelWriter(file_path, **kwargs) as writer:
+        df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+
+def add_cost_comparison_column(file_path):
+    """
+    添加相较于同分布下最小k的k-split-augment算法的花销百分比列
+
+    公式：(此算法花销 - 基准算法花销) / 此算法花销
+    自动查找每个分布下k值最小的k-split-augment作为基准
+    """
+    if not os.path.exists(file_path):
+        return
+
+    df = pd.read_excel(file_path)
+
+    # 如果列已存在，先删除
+    if 'cost_vs_baseline_augment' in df.columns:
+        df = df.drop(columns=['cost_vs_baseline_augment'])
+
+    # 为每个分布找到最小k的augment算法作为基准
+    distribution_baselines = {}
+    for dist in df['distribution'].unique():
+        dist_df = df[df['distribution'] == dist]
+        # 查找所有 k-split-augment-* 算法
+        augment_rows = dist_df[dist_df['algorithm'].str.startswith(
+            'k-split-augment-', na=False)]
+
+        if not augment_rows.empty:
+            # 提取k值并找到最小的
+            k_values = []
+            for alg in augment_rows['algorithm']:
+                try:
+                    k = int(alg.split('-')[-1])
+                    k_values.append(k)
+                except:
+                    continue
+
+            if k_values:
+                min_k = min(k_values)
+                baseline_alg = f'k-split-augment-{min_k}'
+                baseline_cost = dist_df[dist_df['algorithm'] ==
+                                        baseline_alg]['total_cost'].iloc[0]
+                distribution_baselines[dist] = (baseline_alg, baseline_cost)
+
+    # 为每一行计算百分比
+    cost_comparison = []
+    for _, row in df.iterrows():
+        dist = row['distribution']
+        this_cost = row['total_cost']
+
+        if dist not in distribution_baselines or this_cost == 0:
+            cost_comparison.append(None)
+        else:
+            baseline_alg, baseline_cost = distribution_baselines[dist]
+            percentage = (this_cost - baseline_cost) / this_cost
+            cost_comparison.append(percentage)
+
+    # 插入到 total_cost 列之后
+    cost_col_idx = df.columns.get_loc('total_cost') + 1
+    df.insert(cost_col_idx, 'cost_vs_baseline_augment', cost_comparison)
+
+    df.to_excel(file_path, index=False)
+
+    # 输出使用的基准信息
+    print("Baseline algorithms used for each distribution:")
+    for dist, (alg, cost) in distribution_baselines.items():
+        print(f"  {dist}: {alg} (cost={cost:.2f})")
+
+
+def write_dashboard_report(file_path,
+                           distribution_name,
+                           algorithm_name,
+                           network,
+                           allocations,
+                           users,
+                           reverse_edge_flow=0,
+                           runtime=0,
+                           top15_utilization=0):
+    """
+    统计并保存算法性能指标到dashboard
+
+    参数:
+        file_path: Excel 文件路径
+        distribution_name: 分布名称（user_dist-llm_dist）
+        algorithm_name: 算法名称
+        network: Network对象
+        allocations: 分配结果列表
+        users: 用户字典（用于计算服务率）
+        reverse_edge_flow: 反向边流量（默认0，只有augment算法需要传入）
+        runtime: 运行时间（秒）
+        top15_utilization: 前15条关键链路的平均利用率
+    """
+    if not allocations:
+        return
+
+    # 计算总需求
+    total_demand = sum(u.bw for u in users.values())
+
+    # 计算实际服务流量
+    total_served = sum(alloc['flow'] for alloc in allocations)
+
+    # 服务率
+    service_rate = total_served / total_demand if total_demand > 0 else 0
+
+    # 总花销
+    total_cost = sum(alloc['cost'] for alloc in allocations)
+
+    # 统计路径指标（从网络最终状态统计，而非从allocation）
+    # 这样可以正确反映反向边对流量分配的影响
+    total_flow_distance = 0
+    total_flow_hops = 0
+
+    for link_list in network.links.values():
+        for link in link_list:
+            # 只统计正向边且有流量的边
+            if not link.is_reverse and link.flow > 1e-9:
+                total_flow_distance += link.flow * link.distance
+                total_flow_hops += link.flow  # 每单位流量经过1跳
+
+    # 计算实际服务流量
+    total_served = sum(alloc['flow'] for alloc in allocations)
+
+    # 计算加权平均值
+    avg_physical_distance = total_flow_distance / total_served if total_served > 0 else 0
+    avg_hops = total_flow_hops / total_served if total_served > 0 else 0
+
+    # 构建数据行
+    row = {
+        'distribution': distribution_name,
+        'algorithm': algorithm_name,
+        'service_rate': service_rate,
+        'total_cost': total_cost,
+        'runtime_seconds': runtime,
+        'top15_avg_utilization': top15_utilization,
+        'avg_path_length': avg_physical_distance,
+        'avg_hops': avg_hops,
+        'reverse_edge_flow': reverse_edge_flow
+    }
+
+    # 追加模式写入Excel
+    mode = 'a' if os.path.exists(file_path) else 'w'
+
+    if mode == 'a':
+        # 读取现有数据并追加
+        existing_df = pd.read_excel(file_path)
+        new_df = pd.concat([existing_df, pd.DataFrame([row])],
+                           ignore_index=True)
+    else:
+        new_df = pd.DataFrame([row])
+
+    new_df.to_excel(file_path, index=False)
+
+
 def no_split(network, users, llms, user_ideal_llms):
     print("Starting no-split allocation")
     network_copy = copy.deepcopy(network)
@@ -325,13 +527,19 @@ def no_split(network, users, llms, user_ideal_llms):
         if is_shared:
             llms[llm_id].available_computation -= single_cpu
 
+        # 计算物理距离和跳数（排除超源和超汇的边）
+        physical_distance = sum(lk.distance for lk in link_path[1:-1])
+        hops = len(link_path) - 2
+
         allocations.append({
             "algorithm": "no_split",
             'user_id': user_id,
             'llm_id': llm_id,
             'path': node_path[1:-1],
             'cost': dist[T] * push,
-            'flow': push
+            'flow': push,
+            'physical_distance': physical_distance,
+            'hops': hops
         })
         remaining -= push
     return allocations, network_copy
@@ -383,13 +591,19 @@ def k_split(network, users, llms, k):
         if is_shared:
             llms[llm_id].available_computation -= single_cpu
 
+        # 计算物理距离和跳数（排除超源和超汇的边）
+        physical_distance = sum(lk.distance for lk in link_path[1:-1])
+        hops = len(link_path) - 2
+
         allocations.append({
             "algorithm": f"{k}-split",
             'user_id': user_id,
             'llm_id': llm_id,
             'path': node_path[1:-1],
             'cost': dist[T] * push,
-            'flow': push
+            'flow': push,
+            'physical_distance': physical_distance,
+            'hops': hops
         })
         remaining -= push
 
@@ -420,12 +634,11 @@ def k_split_augment(network, users, llms, k):
         for lid, llm in llms.items():
             net.add_link(lid, T, total_bw, 0)
 
-    # 运行最小费用流
-    net.successive_shortest_paths(S, T, total_bw, k=k)
-
-    allocations = net.decompose_flow_paths(S,
-                                           T,
-                                           algorithm_name=f"{k}-split-augment")
+    # 运行最小费用流，获取反向边统计
+    allocations, reverse_edge_count = net.successive_shortest_paths(S,
+                                                                    T,
+                                                                    total_bw,
+                                                                    k=k)
 
     # 基于最终流量结果扣减 LLM 计算资源
     if is_shared and single_bw > 0:
@@ -434,7 +647,45 @@ def k_split_augment(network, users, llms, k):
             flow_units = allocation['flow'] / single_bw
             llms[llm_id].available_computation -= single_cpu * flow_units
 
-    return allocations, net
+    return allocations, net, reverse_edge_count
+
+
+def bottleneck_augment(network, users, llms):
+    print("进入了 bottleneck-augment 算法")
+    net = copy.deepcopy(network)
+
+    u0 = next(iter(users.values()))
+    single_bw = u0.bw
+    single_cpu = u0.computation
+    total_bw = sum(u.bw for u in users.values())
+
+    S, T = -1, -2
+    net.add_node(Entity.Node(S, 0, 0))
+    net.add_node(Entity.Node(T, 0, 0))
+
+    for uid, u in users.items():
+        net.add_link(S, uid, u.bw, 0)  # 费用 0
+
+    if is_shared:
+        for lid, llm in llms.items():
+            max_customers = int(llm.computation // single_cpu)
+            net.add_link(lid, T, max_customers * single_bw, 0)
+    else:
+        for lid, llm in llms.items():
+            net.add_link(lid, T, total_bw, 0)
+
+    # 运行最小费用流，使用瓶颈流量
+    allocations, reverse_edge_flow = net.successive_shortest_paths(
+        S, T, total_bw, k=1, use_bottleneck=True)
+
+    # 基于最终流量结果扣减 LLM 计算资源
+    if is_shared and single_bw > 0:
+        for allocation in allocations:
+            llm_id = allocation['llm_id']
+            flow_units = allocation['flow'] / single_bw
+            llms[llm_id].available_computation -= single_cpu * flow_units
+
+    return allocations, net, reverse_edge_flow
 
 
 if __name__ == "__main__":
@@ -470,7 +721,8 @@ if __name__ == "__main__":
                 }
                 user_ideal_llms[user.id] = ideal_llms
 
-            # Entity.visualize_network(nodes_list, network, llms, users)
+            Entity.visualize_network(nodes_list, network, llms, users,
+                                     user_distribution, llm_distribution)
 
             # 初始化运行时间记录字典
             runtime_data = {}
@@ -498,22 +750,29 @@ if __name__ == "__main__":
                 network.reset_network(llms)
 
             # k_split_augment
-            ks = [1, 2, 4, 5, 10, 20, 25, 50, 100, 250]
             augment_results = {kid: None for kid in ks}
             augment_networks = {kid: None for kid in ks}
+            augment_reverse_flows = {kid: 0 for kid in ks}  # 存储反向边流量
             distribution_name = f'{user_distribution}-{llm_distribution}'
 
             for split_k in ks:
                 start_time = time.time()
-                augment_allocations, augment_network = k_split_augment(network,
-                                                                        users,
-                                                                        llms,
-                                                                        k=split_k)
-                runtime_data[f'k-split-augment-{split_k}'] = time.time() - start_time
+                augment_allocations, augment_network, reverse_flow = k_split_augment(
+                    network, users, llms, k=split_k)
+                runtime_data[f'k-split-augment-{split_k}'] = time.time(
+                ) - start_time
                 augment_results[split_k] = augment_allocations
                 augment_networks[split_k] = augment_network
+                augment_reverse_flows[split_k] = reverse_flow  # 保存反向边流量
 
                 network.reset_network(llms)
+
+            # bottleneck_augment
+            start_time = time.time()
+            bottleneck_allocations, bottleneck_network, bottleneck_reverse_flow = bottleneck_augment(
+                network, users, llms)
+            runtime_data['bottleneck-augment'] = time.time() - start_time
+            network.reset_network(llms)
 
             # 组织所有算法的 allocations
             all_blocks = []
@@ -535,8 +794,22 @@ if __name__ == "__main__":
                 df_k = merge_allocations_by_path(allocs)
                 all_blocks.append((f'k-split-augment-{k_val}', df_k))
 
+            # bottleneck_augment 结果
+            if bottleneck_allocations:
+                bottleneck_df = merge_allocations_by_path(
+                    bottleneck_allocations)
+                all_blocks.append(('bottleneck-augment', bottleneck_df))
+
             write_origin_results(origin_file, all_blocks, user_distribution,
                                  llm_distribution)
+
+            # 保存 bottleneck-augment 每轮推流的 k 值统计
+            if bottleneck_allocations:
+                write_bottleneck_k_report(
+                    bottleneck_k_file,
+                    f'{user_distribution}-{llm_distribution}',
+                    bottleneck_allocations)
+                print(f"Bottleneck-k report saved to {bottleneck_k_file}")
 
             # Link utilization report
             # 使用受限介数中心性：只计算 user→LLM 路径
@@ -555,6 +828,9 @@ if __name__ == "__main__":
                 (f'k-split-augment-{k_val}', net)
                 for k_val, net in augment_networks.items() if net is not None
             ])
+            # 添加 bottleneck_augment
+            algorithm_networks.append(
+                ('bottleneck-augment', bottleneck_network))
 
             algorithm_utils = []
             for alg_name, net in algorithm_networks:
@@ -573,3 +849,73 @@ if __name__ == "__main__":
                                  f'{user_distribution}-{llm_distribution}',
                                  runtime_data)
             print(f"Runtime report saved to {runtime_file}")
+
+            # 保存dashboard统计报告
+            distribution_name = f'{user_distribution}-{llm_distribution}'
+
+            # 将algorithm_utils转为字典，方便查询
+            util_dict = {
+                alg_name: util_map
+                for alg_name, util_map in algorithm_utils
+            }
+
+            # no-split算法
+            top15_util = 0
+            if 'no-split' in util_dict:
+                utils = list(util_dict['no-split'].values())
+                top15_util = sum(utils) / len(utils) if utils else 0
+
+            write_dashboard_report(dash_file, distribution_name, 'no-split',
+                                   no_split_network,
+                                   no_split_allocations, users, 0,
+                                   runtime_data.get('no-split', 0), top15_util)
+
+            # k-split算法
+            for k_val, allocs in k_split_results.items():
+                if allocs:
+                    alg_name = f'k-split-{k_val}'
+                    top15_util = 0
+                    if alg_name in util_dict:
+                        utils = list(util_dict[alg_name].values())
+                        top15_util = sum(utils) / len(utils) if utils else 0
+
+                    write_dashboard_report(dash_file, distribution_name,
+                                           alg_name, k_split_networks[k_val],
+                                           allocs, users, 0,
+                                           runtime_data.get(alg_name,
+                                                            0), top15_util)
+
+            # k-split-augment算法
+            for k_val, allocs in augment_results.items():
+                if allocs:
+                    alg_name = f'k-split-augment-{k_val}'
+                    top15_util = 0
+                    if alg_name in util_dict:
+                        utils = list(util_dict[alg_name].values())
+                        top15_util = sum(utils) / len(utils) if utils else 0
+
+                    write_dashboard_report(dash_file, distribution_name,
+                                           alg_name, augment_networks[k_val],
+                                           allocs, users,
+                                           augment_reverse_flows[k_val],
+                                           runtime_data.get(alg_name,
+                                                            0), top15_util)
+
+            # bottleneck-augment算法
+            if bottleneck_allocations:
+                top15_util = 0
+                if 'bottleneck-augment' in util_dict:
+                    utils = list(util_dict['bottleneck-augment'].values())
+                    top15_util = sum(utils) / len(utils) if utils else 0
+
+                write_dashboard_report(
+                    dash_file, distribution_name, 'bottleneck-augment',
+                    bottleneck_network, bottleneck_allocations, users,
+                    bottleneck_reverse_flow,
+                    runtime_data.get('bottleneck-augment', 0), top15_util)
+
+            print(f"Dashboard report saved to {dash_file}")
+
+    # 所有分布组合的算法运行完毕后，添加花销对比列
+    add_cost_comparison_column(dash_file)
+    print(f"Cost comparison column added to {dash_file}")

@@ -263,7 +263,7 @@ def assign_user_nodes_by_distribution(G, distribution_type='uniform'):
 
     # 定义用户节点的配置
     user_choices = [{
-        'num': 80,
+        'num': 8,
         'num_users': 100,
         'cpu_demand': 4,
         'mem_demand': 8,
@@ -406,7 +406,7 @@ def assign_llm_nodes_by_distribution(G,
                     del G.nodes[n][attr]
 
     # 定义LLM候选节点的配置
-    llm_choices = [{'num': 16, 'cpu_capacity': 24, 'mem_capacity': 16}]
+    llm_choices = [{'num': 4, 'cpu_capacity': 10, 'mem_capacity': 16}]
 
     # 计算总的LLM节点数量
     total_llm_nodes = sum(choice['num'] for choice in llm_choices)
@@ -527,7 +527,7 @@ def assign_llm_nodes_by_distribution(G,
 # ========== 网络生成方式选择 ==========
 # 设置为 True 使用自定义网络（修改 create_custom_network 函数内的坐标和边）
 # 设置为 False 使用随机生成网络
-USE_CUSTOM_NETWORK = False
+USE_CUSTOM_NETWORK = True
 
 # 生成基础网络拓扑
 if USE_CUSTOM_NETWORK:
