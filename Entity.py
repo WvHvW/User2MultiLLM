@@ -410,8 +410,75 @@ def _load_excel(path, sheet_name=0, index_col=None):
 
 
 def load_network_from_sheets(sheets_root=sheets_dir):
-    """根据 sheets 中的表格装配网络、节点、用户与 LLM 信息。"""
+    """
+    根据 sheets 中的表格装配网络、节点、用户与 LLM 信息。
 
+    支持两种格式：
+    1. 密集矩阵格式（小规模网络）：adjacency.xlsx, bandwidth.xlsx, distance.xlsx
+    2. 稀疏边列表格式（大规模网络）：edge_list.xlsx
+    """
+    node_path = os.path.join(sheets_root, 'node.xlsx')
+    edge_list_path = os.path.join(sheets_root, 'edge_list.xlsx')
+    adjacency_path = os.path.join(sheets_root, 'adjacency.xlsx')
+
+    # 检测使用哪种格式
+    use_sparse = os.path.exists(edge_list_path)
+
+    if use_sparse:
+        print(f"检测到稀疏格式，从 {edge_list_path} 加载边数据...")
+        return _load_network_sparse(sheets_root)
+    else:
+        print(f"使用密集矩阵格式，从 {adjacency_path} 加载...")
+        return _load_network_dense(sheets_root)
+
+
+def _load_network_sparse(sheets_root):
+    """从稀疏边列表格式加载网络（适用于大规模网络）"""
+    node_path = os.path.join(sheets_root, 'node.xlsx')
+    edge_list_path = os.path.join(sheets_root, 'edge_list.xlsx')
+
+    node_df = _load_excel(node_path)
+    edge_df = _load_excel(edge_list_path)
+    node_df = node_df.fillna(0)
+    edge_df = edge_df.fillna(0)
+
+    # 创建网络和节点
+    network = Network()
+    node_entities = {}
+
+    for row in node_df.itertuples(index=False):
+        node = Node(id=int(row.node_id),
+                    pos_X=float(row.pos_x),
+                    pos_Y=float(row.pos_y))
+        network.add_node(node)
+        node_entities[node.id] = node
+
+    # 从边列表添加边（去重：只处理src < dst的边）
+    added_edges = set()
+    for row in edge_df.itertuples(index=False):
+        src = int(row.src)
+        dst = int(row.dst)
+
+        # 确保每条边只添加一次
+        edge_key = (min(src, dst), max(src, dst))
+        if edge_key in added_edges:
+            continue
+
+        capacity = float(row.capacity_mbps)
+        distance = float(row.distance)
+
+        if capacity <= 0 or distance <= 0:
+            continue
+
+        network.add_link(src, dst, capacity, distance)
+        added_edges.add(edge_key)
+
+    print(f"加载完成: {len(node_entities)} 节点, {len(added_edges)} 条边")
+    return {'network': network, 'nodes': node_entities}
+
+
+def _load_network_dense(sheets_root):
+    """从密集矩阵格式加载网络（原有逻辑，适用于小规模网络）"""
     adjacency_path = os.path.join(sheets_root, 'adjacency.xlsx')
     bandwidth_path = os.path.join(sheets_root, 'bandwidth.xlsx')
     distance_path = os.path.join(sheets_root, 'distance.xlsx')
