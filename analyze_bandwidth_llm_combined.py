@@ -26,6 +26,7 @@ is_shared = 1
 BANDWIDTH_VALUES = list(range(500, 4250, 250))  # 500到4000，步长250
 COMPUTATION_VALUES = list(range(8, 34, 2))  # 8到32，步长2
 ALGORITHMS = ['no-split', '1-split', '100-split-augment', 'bottleneck-augment']
+BAR_COST_LABEL_VERTICAL_OFFSET = 1.0
 
 # 输出目录
 _BANDWIDTH_DIR = os.path.join(os.path.dirname(__file__), 'bandwidth')
@@ -316,14 +317,36 @@ def plot_dual_axis(x_values, data_dict, x_label, title, filename):
             continue
 
         optimizations = [data_dict[alg][i][0] for i in range(len(x_values))]
+        costs = [data_dict[alg][i][2] for i in range(len(x_values))]
         offset = (idx - len(algorithms) / 2) * width + width / 2
 
-        ax1.bar(x_positions + offset,
+        bars = ax1.bar(x_positions + offset,
                 optimizations,
                 width,
                 label=f'{alg} (opt)',
                 color=colors.get(alg, 'gray'),
                 alpha=0.7)
+
+        for bar_index, bar in enumerate(bars):
+            bar_height = bar.get_height()
+            if bar_index < len(costs):
+                cost_value = int(round(costs[bar_index]))
+            else:
+                cost_value = 0
+
+            if bar_height >= 0:
+                label_y = bar_height + BAR_COST_LABEL_VERTICAL_OFFSET + idx * BAR_COST_LABEL_VERTICAL_OFFSET
+                vertical_alignment = 'bottom'
+            else:
+                label_y = bar_height - (BAR_COST_LABEL_VERTICAL_OFFSET + idx * BAR_COST_LABEL_VERTICAL_OFFSET)
+                vertical_alignment = 'top'
+
+            ax1.text(bar.get_x() + bar.get_width() / 2,
+                     label_y,
+                     f'{cost_value}',
+                     ha='center',
+                     va=vertical_alignment,
+                     fontsize=8)
 
     ax1.set_xlabel(x_label, fontsize=13)
     ax1.set_ylabel('Optimization vs 1-split-augment (%)', fontsize=13)
@@ -479,7 +502,8 @@ def main():
                         else:
                             opt_percentage = 0
 
-                        data_by_algorithm[alg].append((opt_percentage, sr))
+                        data_by_algorithm[alg].append((opt_percentage, sr,
+                                                       cost))
 
                         # 记录到Excel行（累积到总列表）
                         all_excel_rows.append({
@@ -584,7 +608,8 @@ def main():
                         else:
                             opt_percentage = 0
 
-                        data_by_algorithm[alg].append((opt_percentage, sr))
+                        data_by_algorithm[alg].append((opt_percentage, sr,
+                                                       cost))
 
                         # 记录到Excel行（累积到总列表）
                         all_excel_rows.append({
