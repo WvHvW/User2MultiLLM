@@ -6,6 +6,9 @@ import time
 import networkx as nx
 import os
 import copy
+import matplotlib
+matplotlib.use('Agg')  # 非交互式后端
+import matplotlib.pyplot as plt
 
 DISTRIBUTION_TYPES = Entity.DISTRIBUTION_TYPES
 script_path = os.path.dirname(os.path.abspath(__file__))
@@ -19,6 +22,100 @@ dash_file = os.path.join(_RESULT_DIR, 'DashBoard.xlsx')
 link_util_file = os.path.join(_RESULT_DIR, 'LinkUtilization.xlsx')
 runtime_file = os.path.join(_RESULT_DIR, 'runtime.xlsx')
 bottleneck_k_file = os.path.join(_RESULT_DIR, 'bottleneck-k.xlsx')
+reverse_edge_saving_file = os.path.join(_RESULT_DIR,
+                                        'reverse-edge-cost-saving.xlsx')
+
+_BACKDRAW_DIR = os.path.join(os.path.dirname(__file__), 'backdraw')
+os.makedirs(_BACKDRAW_DIR, exist_ok=True)
+
+_WITHDRAW_DIR = os.path.join(os.path.dirname(__file__), 'withdraw')
+os.makedirs(_WITHDRAW_DIR, exist_ok=True)
+
+
+def plot_bottleneck_withdraw_cost(distribution_name, backtrack_iters,
+                                   cost_comparisons):
+    """
+    为bottleneck-augment绘制回撤成本优化图
+
+    参数:
+        distribution_name: 分布名称
+        backtrack_iters: 使用反向边的迭代序号列表
+        cost_comparisons: 成本对比列表 (augment_cost, greedy_cost, diff)
+    """
+
+    if not backtrack_iters:
+        print(f"    bottleneck-augment: 无反向边使用，跳过")
+        return
+
+    # 分离有解和无解的情况
+    valid_x = []
+    valid_y = []
+    invalid_x = []
+
+    for idx, comp in enumerate(cost_comparisons, start=1):
+        if comp[2] != float('inf'):
+            valid_x.append(idx)
+            valid_y.append(comp[2])
+        else:
+            invalid_x.append(idx)
+
+    if not valid_x and not invalid_x:
+        print(f"    bottleneck-augment: 无有效数据，跳过")
+        return
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+
+    # 绘制有解的部分
+    if valid_x:
+        ax.plot(valid_x,
+                valid_y,
+                marker='o',
+                color='tab:purple',
+                label='bottleneck-augment',
+                linewidth=2,
+                markersize=6,
+                alpha=0.8)
+
+    # 绘制无解的点（红色X标记在y=0位置）
+    if invalid_x:
+        ax.scatter(invalid_x,
+                   [0] * len(invalid_x),
+                   marker='x',
+                   color='red',
+                   s=100,
+                   label='greedy no solution',
+                   zorder=5)
+
+    # 添加零线参考
+    ax.axhline(y=0, color='gray', linestyle='--', linewidth=1, alpha=0.5)
+
+    ax.set_xlabel('withdraw_order', fontsize=13)
+    ax.set_ylabel('potimization', fontsize=13)
+    ax.set_title(f'{distribution_name} (bottleneck)',
+                 fontsize=15,
+                 fontweight='bold')
+    ax.legend(fontsize=11, loc='best')
+    ax.grid(True, alpha=0.3)
+
+    # 添加说明文本
+    note_text = 'comparison: greedy_cost - augment_cost'
+    ax.text(0.02,
+            0.98,
+            note_text,
+            transform=ax.transAxes,
+            fontsize=10,
+            verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
+
+    plt.tight_layout()
+
+    # 保存图片
+    filename = os.path.join(_WITHDRAW_DIR,
+                            f'{distribution_name}-bottleneck.png')
+    plt.savefig(filename, dpi=300, bbox_inches='tight')
+    plt.close()
+
+    print(f"    已保存bottleneck回撤对比图: {filename}")
 
 
 def merge_allocations_by_path(allocations):
@@ -308,16 +405,35 @@ def write_bottleneck_k_report(file_path, sheet_name, allocations):
 
     # 添加统计信息
     k_values = [alloc['flow'] for alloc in allocations]
-    stats_rows = [
-        {'iteration': 'Total', 'k_value': sum(k_values), 'user_id': '',
-         'llm_id': '', 'path': f'{len(allocations)} iterations', 'cost': sum(alloc["cost"] for alloc in allocations)},
-        {'iteration': 'Mean', 'k_value': sum(k_values) / len(k_values) if k_values else 0,
-         'user_id': '', 'llm_id': '', 'path': '', 'cost': ''},
-        {'iteration': 'Min', 'k_value': min(k_values) if k_values else 0,
-         'user_id': '', 'llm_id': '', 'path': '', 'cost': ''},
-        {'iteration': 'Max', 'k_value': max(k_values) if k_values else 0,
-         'user_id': '', 'llm_id': '', 'path': '', 'cost': ''}
-    ]
+    stats_rows = [{
+        'iteration': 'Total',
+        'k_value': sum(k_values),
+        'user_id': '',
+        'llm_id': '',
+        'path': f'{len(allocations)} iterations',
+        'cost': sum(alloc["cost"] for alloc in allocations)
+    }, {
+        'iteration': 'Mean',
+        'k_value': sum(k_values) / len(k_values) if k_values else 0,
+        'user_id': '',
+        'llm_id': '',
+        'path': '',
+        'cost': ''
+    }, {
+        'iteration': 'Min',
+        'k_value': min(k_values) if k_values else 0,
+        'user_id': '',
+        'llm_id': '',
+        'path': '',
+        'cost': ''
+    }, {
+        'iteration': 'Max',
+        'k_value': max(k_values) if k_values else 0,
+        'user_id': '',
+        'llm_id': '',
+        'path': '',
+        'cost': ''
+    }]
 
     df = pd.concat([df, pd.DataFrame(stats_rows)], ignore_index=True)
 
@@ -329,6 +445,198 @@ def write_bottleneck_k_report(file_path, sheet_name, allocations):
 
     with pd.ExcelWriter(file_path, **kwargs) as writer:
         df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+
+def write_reverse_edge_saving_report(file_path, sheet_name, allocations):
+    """
+    保存增广路径算法中反向边带来的成本优化统计
+
+    参数:
+        file_path: Excel 文件路径
+        sheet_name: sheet 名称（格式：algorithm-distribution）
+        allocations: 增广算法的分配结果列表
+    """
+    if not allocations:
+        return
+
+    # 只统计使用了反向边的路径
+    reverse_edge_paths = [
+        alloc for alloc in allocations
+        if alloc.get('reverse_edge_count', 0) > 0
+    ]
+
+    if not reverse_edge_paths:
+        # 如果没有使用反向边，创建空报告
+        rows = [{
+            'iteration': 'N/A',
+            'reverse_edge_count': 0,
+            'cost_saving': 0,
+            'flow': 0,
+            'user_id': '',
+            'llm_id': '',
+            'path': 'No reverse edges used',
+            'total_cost': 0
+        }]
+    else:
+        rows = []
+        for idx, alloc in enumerate(reverse_edge_paths):
+            path_str = '->'.join(map(str, alloc['path']))
+            rows.append({
+                'iteration':
+                idx + 1,
+                'reverse_edge_count':
+                alloc.get('reverse_edge_count', 0),
+                'cost_saving':
+                alloc.get('reverse_edge_cost_saving', 0),
+                'flow':
+                alloc['flow'],
+                'user_id':
+                alloc['user_id'],
+                'llm_id':
+                alloc['llm_id'],
+                'path':
+                path_str,
+                'total_cost':
+                alloc['cost']
+            })
+
+    df = pd.DataFrame(rows)
+
+    # 添加统计信息
+    if reverse_edge_paths:
+        total_saving = sum(
+            alloc.get('reverse_edge_cost_saving', 0)
+            for alloc in reverse_edge_paths)
+        total_reverse_edges = sum(
+            alloc.get('reverse_edge_count', 0) for alloc in reverse_edge_paths)
+        stats_rows = [{
+            'iteration':
+            'Total',
+            'reverse_edge_count':
+            total_reverse_edges,
+            'cost_saving':
+            total_saving,
+            'flow':
+            sum(alloc['flow'] for alloc in reverse_edge_paths),
+            'user_id':
+            '',
+            'llm_id':
+            '',
+            'path':
+            f'{len(reverse_edge_paths)} paths with reverse edges',
+            'total_cost':
+            sum(alloc['cost'] for alloc in reverse_edge_paths)
+        }, {
+            'iteration':
+            'Mean Saving',
+            'reverse_edge_count':
+            '',
+            'cost_saving':
+            total_saving /
+            len(reverse_edge_paths) if reverse_edge_paths else 0,
+            'flow':
+            '',
+            'user_id':
+            '',
+            'llm_id':
+            '',
+            'path':
+            '',
+            'total_cost':
+            ''
+        }]
+        df = pd.concat([df, pd.DataFrame(stats_rows)], ignore_index=True)
+
+    # 追加模式：如果文件存在则追加新 sheet，否则创建新文件
+    mode = 'a' if os.path.exists(file_path) else 'w'
+    kwargs = {'mode': mode, 'engine': 'openpyxl'}
+    if mode == 'a':
+        kwargs['if_sheet_exists'] = 'replace'
+
+    with pd.ExcelWriter(file_path, **kwargs) as writer:
+        df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+
+def plot_reverse_edge_cost_saving(allocations, algorithm_name, distribution_name):
+    """
+    绘制反向边成本优化图表
+
+    参数:
+        allocations: 增广算法的分配结果列表
+        algorithm_name: 算法名称
+        distribution_name: 分布名称
+    """
+    if not allocations:
+        return
+
+    # 只统计使用了反向边的路径
+    reverse_edge_paths = [
+        alloc for alloc in allocations
+        if alloc.get('reverse_edge_count', 0) > 0
+    ]
+
+    if not reverse_edge_paths:
+        print(f"  {algorithm_name}-{distribution_name}: 无反向边使用，跳过绘图")
+        return
+
+    # 提取数据
+    iterations = list(range(1, len(reverse_edge_paths) + 1))
+    cost_savings = [alloc.get('reverse_edge_cost_saving', 0) for alloc in reverse_edge_paths]
+    reverse_edge_counts = [alloc.get('reverse_edge_count', 0) for alloc in reverse_edge_paths]
+    cumulative_savings = np.cumsum(cost_savings)
+
+    # 创建图表
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+
+    # 上图：每次迭代的成本节省（柱状图）+ 累计节省（折线图）
+    color1 = 'tab:blue'
+    ax1.bar(iterations, cost_savings, color=color1, alpha=0.6, label='单次成本节省')
+    ax1.set_xlabel('使用反向边的迭代序号', fontsize=12)
+    ax1.set_ylabel('单次成本节省', color=color1, fontsize=12)
+    ax1.tick_params(axis='y', labelcolor=color1)
+    ax1.grid(True, alpha=0.3)
+
+    # 添加累计节省折线
+    ax1_twin = ax1.twinx()
+    color2 = 'tab:red'
+    ax1_twin.plot(iterations, cumulative_savings, color=color2, marker='o',
+                  linewidth=2, markersize=4, label='累计成本节省')
+    ax1_twin.set_ylabel('累计成本节省', color=color2, fontsize=12)
+    ax1_twin.tick_params(axis='y', labelcolor=color2)
+
+    # 合并图例
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax1_twin.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+
+    ax1.set_title(f'{algorithm_name} - {distribution_name}\n反向边成本优化统计',
+                  fontsize=14, fontweight='bold')
+
+    # 下图：每次迭代的反向边数量
+    ax2.bar(iterations, reverse_edge_counts, color='tab:green', alpha=0.6)
+    ax2.set_xlabel('使用反向边的迭代序号', fontsize=12)
+    ax2.set_ylabel('反向边数量', fontsize=12)
+    ax2.set_title('每次迭代使用的反向边数量', fontsize=12)
+    ax2.grid(True, alpha=0.3)
+
+    # 添加统计信息文本
+    total_saving = sum(cost_savings)
+    total_edges = sum(reverse_edge_counts)
+    avg_saving = total_saving / len(cost_savings) if cost_savings else 0
+
+    stats_text = f'总节省: {total_saving:.1f}\n使用反向边次数: {len(reverse_edge_paths)}\n平均单次节省: {avg_saving:.1f}\n反向边总数: {total_edges}'
+    ax2.text(0.98, 0.98, stats_text, transform=ax2.transAxes,
+             fontsize=10, verticalalignment='top', horizontalalignment='right',
+             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    plt.tight_layout()
+
+    # 保存图片
+    filename = os.path.join(_BACKDRAW_DIR, f'{algorithm_name}-{distribution_name}.png')
+    plt.savefig(filename, dpi=300, bbox_inches='tight')
+    plt.close()
+
+    print(f"  反向边成本优化图已保存: {filename}")
 
 
 def add_cost_comparison_column(file_path):
@@ -635,10 +943,8 @@ def k_split_augment(network, users, llms, k):
             net.add_link(lid, T, total_bw, 0)
 
     # 运行最小费用流，获取反向边统计
-    allocations, reverse_edge_count = net.successive_shortest_paths(S,
-                                                                    T,
-                                                                    total_bw,
-                                                                    k=k)
+    allocations, reverse_edge_count, _, _ = net.successive_shortest_paths(
+        S, T, total_bw, k=k)
 
     # 基于最终流量结果扣减 LLM 计算资源
     if is_shared and single_bw > 0:
@@ -675,7 +981,7 @@ def bottleneck_augment(network, users, llms):
             net.add_link(lid, T, total_bw, 0)
 
     # 运行最小费用流，使用瓶颈流量
-    allocations, reverse_edge_flow = net.successive_shortest_paths(
+    allocations, reverse_edge_flow, backtrack_iters, cost_comparisons = net.successive_shortest_paths(
         S, T, total_bw, k=1, use_bottleneck=True)
 
     # 基于最终流量结果扣减 LLM 计算资源
@@ -685,7 +991,7 @@ def bottleneck_augment(network, users, llms):
             flow_units = allocation['flow'] / single_bw
             llms[llm_id].available_computation -= single_cpu * flow_units
 
-    return allocations, net, reverse_edge_flow
+    return allocations, net, reverse_edge_flow, backtrack_iters, cost_comparisons
 
 
 if __name__ == "__main__":
@@ -769,10 +1075,18 @@ if __name__ == "__main__":
 
             # bottleneck_augment
             start_time = time.time()
-            bottleneck_allocations, bottleneck_network, bottleneck_reverse_flow = bottleneck_augment(
-                network, users, llms)
+            (bottleneck_allocations, bottleneck_network, bottleneck_reverse_flow,
+             bottleneck_backtrack_iters,
+             bottleneck_cost_comparisons) = bottleneck_augment(
+                 network, users, llms)
             runtime_data['bottleneck-augment'] = time.time() - start_time
             network.reset_network(llms)
+
+            # 绘制bottleneck回撤成本优化图
+            distribution_name = f'{user_distribution}-{llm_distribution}'
+            plot_bottleneck_withdraw_cost(distribution_name,
+                                          bottleneck_backtrack_iters,
+                                          bottleneck_cost_comparisons)
 
             # 组织所有算法的 allocations
             all_blocks = []
@@ -914,7 +1228,30 @@ if __name__ == "__main__":
                     bottleneck_reverse_flow,
                     runtime_data.get('bottleneck-augment', 0), top15_util)
 
+            # 保存反向边成本优化报告
+            # k-split-augment 算法
+            for k_val, allocs in augment_results.items():
+                if allocs:
+                    alg_name = f'k-split-augment-{k_val}'
+                    write_reverse_edge_saving_report(
+                        reverse_edge_saving_file,
+                        f'{alg_name}-{distribution_name}', allocs)
+                    # 绘制反向边成本优化图
+                    plot_reverse_edge_cost_saving(allocs, alg_name, distribution_name)
+
+            # bottleneck-augment 算法
+            if bottleneck_allocations:
+                write_reverse_edge_saving_report(
+                    reverse_edge_saving_file,
+                    f'bottleneck-augment-{distribution_name}',
+                    bottleneck_allocations)
+                # 绘制反向边成本优化图
+                plot_reverse_edge_cost_saving(bottleneck_allocations, 'bottleneck-augment', distribution_name)
+
             print(f"Dashboard report saved to {dash_file}")
+            print(
+                f"Reverse edge cost saving report saved to {reverse_edge_saving_file}"
+            )
 
     # 所有分布组合的算法运行完毕后，添加花销对比列
     add_cost_comparison_column(dash_file)

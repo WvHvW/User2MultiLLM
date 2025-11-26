@@ -248,7 +248,7 @@ def assign_user_nodes_by_distribution(G, distribution_type='uniform'):
 
     Parameters:
     G: NetworkX图对象
-    distribution_type: 分布类型 ('uniform', 'sparse', 'gaussian', 'power_law', 'poisson')
+    distribution_type: 分布类型 ('uniform', 'sparse', 'poisson')
     """
 
     # 获取所有节点ID
@@ -291,30 +291,6 @@ def assign_user_nodes_by_distribution(G, distribution_type='uniform'):
                                          (pos[1] - center_y)**2)
             # 距离中心越近权重越高
             weight = np.exp(-distance_to_center / 30)  # 30是缩放因子
-            weights.append(weight)
-        weights = np.array(weights)
-    elif distribution_type == 'gaussian':
-        # 高斯分布，中心区域权重高
-        center_x, center_y = 50, 50
-        weights = []
-        for node_id in all_nodes:
-            pos = G.nodes[node_id]['pos']
-            distance_to_center = np.sqrt((pos[0] - center_x)**2 +
-                                         (pos[1] - center_y)**2)
-            # 高斯分布，标准差设为20
-            weight = np.exp(-0.5 * (distance_to_center / 20)**2)
-            weights.append(weight)
-        weights = np.array(weights)
-    elif distribution_type == 'power_law':
-        # 幂律分布，中心区域权重高，边缘区域权重低
-        center_x, center_y = 50, 50
-        weights = []
-        for node_id in all_nodes:
-            pos = G.nodes[node_id]['pos']
-            distance_to_center = np.sqrt((pos[0] - center_x)**2 +
-                                         (pos[1] - center_y)**2)
-            # 避免除零错误，添加一个小常数
-            weight = 1 / (distance_to_center + 1e-5)**1.5
             weights.append(weight)
         weights = np.array(weights)
     elif distribution_type == 'poisson':
@@ -435,30 +411,6 @@ def assign_llm_nodes_by_distribution(G,
                                          (pos[1] - center_y)**2)
             # 距离中心越远权重越高
             weight = np.exp(distance_to_center / 30)  # 30是缩放因子
-            weights.append(weight)
-        weights = np.array(weights)
-    elif distribution_type == 'gaussian':
-        # 高斯分布，中心区域权重高
-        center_x, center_y = 50, 50
-        weights = []
-        for node_id in available_nodes:
-            pos = G.nodes[node_id]['pos']
-            distance_to_center = np.sqrt((pos[0] - center_x)**2 +
-                                         (pos[1] - center_y)**2)
-            # 高斯分布，标准差设为20
-            weight = np.exp(-0.5 * (distance_to_center / 20)**2)
-            weights.append(weight)
-        weights = np.array(weights)
-    elif distribution_type == 'power_law':
-        # 幂律分布，中心区域权重高，边缘区域权重低
-        center_x, center_y = 50, 50
-        weights = []
-        for node_id in available_nodes:
-            pos = G.nodes[node_id]['pos']
-            distance_to_center = np.sqrt((pos[0] - center_x)**2 +
-                                         (pos[1] - center_y)**2)
-            # 避免除零错误，添加一个小常数
-            weight = 1 / (distance_to_center + 1e-5)**1.5
             weights.append(weight)
         weights = np.array(weights)
     elif distribution_type == 'poisson':

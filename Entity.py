@@ -185,6 +185,8 @@ class Network:
         remaining = max_flow
         iteration = 0
         reverse_edge_total_flow = 0  # 统计反向边的总流量
+        backtrack_iters = []  # 使用反向边的迭代序号
+        cost_comparisons = []  # 成本对比 (augment_cost, greedy_cost, diff)
 
         while remaining > 1e-9:
             iteration += 1
@@ -272,6 +274,7 @@ class Network:
             reverse_count = 0
             physical_distance = 0
             hops = 0
+            reverse_edge_cost_saving = 0  # 反向边带来的成本节省
 
             for i, lk in enumerate(link_path):
                 # 跳过第一条（S->user）和最后一条（llm->T）边
@@ -280,11 +283,31 @@ class Network:
 
                 if lk.is_reverse:
                     reverse_count += 1
+                    # 反向边的cost是负的（-link.reverse.distance），其绝对值就是节省的成本
+                    reverse_edge_cost_saving += lk.reverse.distance
                 else:
                     physical_distance += lk.distance
                     hops += 1
 
             reverse_edge_total_flow += reverse_count * push  # 反向边数量 × 流量
+
+            # 如果使用了反向边，对比贪心路径的成本
+            if reverse_count > 0:
+                # 在当前网络状态下运行 Dijkstra（只考虑正向边）
+                greedy_dist, greedy_prev = self.dijkstra_with_capacity(
+                    source, push)
+
+                if greedy_dist[sink] < INF:
+                    greedy_path_cost = greedy_dist[sink] * push
+                    cost_diff = greedy_path_cost - real_cost
+
+                    backtrack_iters.append(iteration)
+                    cost_comparisons.append(
+                        (real_cost, greedy_path_cost, cost_diff))
+                else:
+                    # 贪心无法找到路径
+                    backtrack_iters.append(iteration)
+                    cost_comparisons.append((real_cost, INF, INF))
 
             # # 接近完成时输出推流信息
             # if remaining <= 100:
@@ -297,18 +320,30 @@ class Network:
                 alg_name = f"{k}-split-augment"
 
             allocations.append({
-                "algorithm": alg_name,
-                "user_id": node_path[1],  # 超源后第一跳即用户
-                "llm_id": node_path[-2],  # 超汇前最后一跳即LLM
-                "path": node_path[1:-1],
-                "cost": real_cost,
-                "flow": push,
-                "physical_distance": physical_distance,
-                "hops": hops
+                "algorithm":
+                alg_name,
+                "user_id":
+                node_path[1],  # 超源后第一跳即用户
+                "llm_id":
+                node_path[-2],  # 超汇前最后一跳即LLM
+                "path":
+                node_path[1:-1],
+                "cost":
+                real_cost,
+                "flow":
+                push,
+                "physical_distance":
+                physical_distance,
+                "hops":
+                hops,
+                "reverse_edge_count":
+                reverse_count,
+                "reverse_edge_cost_saving":
+                reverse_edge_cost_saving * push  # 总节省 = 单位节省 × 流量
             })
             remaining -= push
 
-        return allocations, reverse_edge_total_flow
+        return allocations, reverse_edge_total_flow, backtrack_iters, cost_comparisons
 
     def _find_flow_path(self, source, sink, remaining_flow):
         queue = deque([source])
@@ -712,4 +747,4 @@ def visualize_network(nodes,
     plt.close()  # 关闭图像，避免在Jupyter等环境中连续显示
 
 
-DISTRIBUTION_TYPES = ['uniform', 'sparse', 'gaussian', 'power_law', 'poisson']
+DISTRIBUTION_TYPES = ['uniform', 'sparse', 'poisson']
