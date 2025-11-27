@@ -26,7 +26,18 @@ is_shared = 1
 BANDWIDTH_VALUES = list(range(500, 4250, 250))  # 500到4000，步长250
 COMPUTATION_VALUES = list(range(8, 34, 2))  # 8到32，步长2
 ALGORITHMS = ['no-split', '1-split', '100-split-augment', 'bottleneck-augment']
-BAR_COST_LABEL_VERTICAL_OFFSET = 1.0
+USER_COMPUTATION_PATTERNS = [
+    [6, 4, 4, 4, 4, 4, 4, 2],
+    [6, 6, 4, 4, 4, 4, 2, 2],
+    [6, 6, 6, 4, 4, 2, 2, 2],
+    [6, 6, 6, 6, 2, 2, 2, 2],
+]
+USER_COMPUTATION_TO_BANDWIDTH = {
+    6: 800,
+    4: 500,
+    2: 200,
+}
+
 
 # 输出目录
 _BANDWIDTH_DIR = os.path.join(os.path.dirname(__file__), 'bandwidth')
@@ -34,6 +45,9 @@ os.makedirs(_BANDWIDTH_DIR, exist_ok=True)
 
 _LLM_DIR = os.path.join(os.path.dirname(__file__), 'llm')
 os.makedirs(_LLM_DIR, exist_ok=True)
+
+_USER_DIR = os.path.join(os.path.dirname(__file__), 'user')
+os.makedirs(_USER_DIR, exist_ok=True)
 
 
 def compute_edge_betweenness(alo_network, users, llms, top_n=10):
@@ -270,6 +284,156 @@ def run_algorithm(network, users, llms, algorithm_name, k=None):
     return allocations, net, total_cost, service_rate
 
 
+def compute_user_distance_flow_ratio(allocations, users, user_order=None):
+    """
+    计算每个用户节点所有路径总距离与其被服务流量总量的比值。
+
+    返回:
+        user_ids: List[int]
+        ratios: List[float]
+        served_flows: List[float]
+    """
+    user_total_cost = {uid: 0.0 for uid in users.keys()}
+    user_total_flow = {uid: 0.0 for uid in users.keys()}
+
+    for allocation in allocations:
+        uid = allocation['user_id']
+        if uid not in user_total_cost:
+            continue
+        flow = allocation['flow']
+        cost = allocation['cost']
+        user_total_cost[uid] += cost
+        user_total_flow[uid] += flow
+
+    if user_order is not None:
+        ordered_user_ids = list(user_order)
+        existing = set(ordered_user_ids)
+        for uid in users.keys():
+            if uid not in existing:
+                ordered_user_ids.append(uid)
+    else:
+        ordered_user_ids = []
+        seen = set()
+        for allocation in allocations:
+            uid = allocation['user_id']
+            if uid in users and uid not in seen:
+                seen.add(uid)
+                ordered_user_ids.append(uid)
+        for uid in users.keys():
+            if uid not in seen:
+                ordered_user_ids.append(uid)
+
+    ratios = []
+    served_flows = []
+    for uid in ordered_user_ids:
+        total_flow = user_total_flow.get(uid, 0.0)
+        total_cost = user_total_cost.get(uid, 0.0)
+        if total_flow > 0:
+            ratio = total_cost / total_flow
+        else:
+            ratio = 0.0
+        ratios.append(ratio)
+        served_flows.append(total_flow)
+
+    return ordered_user_ids, ratios, served_flows
+
+
+def plot_user_distance_flow_ratio(user_labels,
+                                  ratios_by_algorithm,
+                                  service_rates_by_algorithm,
+                                  title,
+                                  filename):
+    """
+    绘制用户维度的路径距离与服务流量比值图，并在右Y轴上显示服务率。
+    """
+    x_positions = np.arange(len(user_labels))
+
+    fig, ax1 = plt.subplots(figsize=(16, 8))
+
+    algorithms = [
+        'no-split', '1-split', '100-split-augment', 'bottleneck-augment'
+    ]
+    colors = {
+        'no-split': 'tab:blue',
+        '1-split': 'tab:red',
+        '100-split-augment': 'tab:purple',
+        'bottleneck-augment': 'tab:pink'
+    }
+    linestyles = {
+        'no-split': '-',
+        '1-split': '--',
+        '100-split-augment': '-.',
+        'bottleneck-augment': ':'
+    }
+    markers = {
+        'no-split': 'o',
+        '1-split': 's',
+        '100-split-augment': '^',
+        'bottleneck-augment': 'D'
+    }
+
+    for alg in algorithms:
+        if alg not in ratios_by_algorithm:
+            continue
+        ax1.plot(x_positions,
+                 ratios_by_algorithm[alg],
+                 marker=markers.get(alg, 'o'),
+                 color=colors.get(alg, 'gray'),
+                 linewidth=2.0,
+                 label=f'{alg} (ratio)',
+                 linestyle=linestyles.get(alg, '-'))
+    ax1.set_xlabel('User (bandwidth)', fontsize=13)
+    ax1.set_ylabel('Avg path distance per unit flow', fontsize=13)
+    ax1.set_xticks(x_positions)
+    ax1.set_xticklabels(user_labels, rotation=45, ha='right')
+    ax1.grid(True, alpha=0.3, axis='y')
+
+    ax2 = ax1.twinx()
+    for alg in algorithms:
+        if alg not in service_rates_by_algorithm:
+            continue
+        service_rate_percent = service_rates_by_algorithm[alg] * 100
+        ax2.plot(x_positions,
+                 [service_rate_percent] * len(x_positions),
+                 linestyle=linestyles.get(alg, '--'),
+                 color=colors.get(alg, 'gray'),
+                 linewidth=1.5,
+                 alpha=0.8,
+                 label=f'{alg} (sr)')
+    ax2.set_ylabel('Service Rate (%)', fontsize=13)
+    ax2.set_ylim([0, 105])
+
+    handles1, labels1 = ax1.get_legend_handles_labels()
+    handles2, labels2 = ax2.get_legend_handles_labels()
+
+    all_handles = []
+    all_labels = []
+    for alg in algorithms:
+        ratio_label = f'{alg} (ratio)'
+        if ratio_label in labels1:
+            idx = labels1.index(ratio_label)
+            all_handles.append(handles1[idx])
+            all_labels.append(labels1[idx])
+
+        sr_label = f'{alg} (sr)'
+        if sr_label in labels2:
+            idx = labels2.index(sr_label)
+            all_handles.append(handles2[idx])
+            all_labels.append(labels2[idx])
+
+    if all_handles:
+        ax1.legend(all_handles,
+                   all_labels,
+                   fontsize=9,
+                   loc='upper left',
+                   bbox_to_anchor=(1.15, 1))
+
+    plt.title(title, fontsize=15, fontweight='bold', pad=20)
+    plt.tight_layout()
+    plt.savefig(filename, dpi=300, bbox_inches='tight')
+    plt.close()
+
+
 def plot_dual_axis(x_values, data_dict, x_label, title, filename):
     """
     绘制双Y轴图表
@@ -308,7 +472,7 @@ def plot_dual_axis(x_values, data_dict, x_label, title, filename):
         'bottleneck-augment': 'D'
     }
 
-    # 左Y轴：optimization
+    # 左Y轴：cost（真实总开销）
     x_positions = np.arange(len(x_values))
     width = 0.8 / len(algorithms)
 
@@ -316,48 +480,46 @@ def plot_dual_axis(x_values, data_dict, x_label, title, filename):
         if alg not in data_dict:
             continue
 
+        # data_dict[alg][i] = (optimization, service_rate, total_cost)
         optimizations = [data_dict[alg][i][0] for i in range(len(x_values))]
         costs = [data_dict[alg][i][2] for i in range(len(x_values))]
         offset = (idx - len(algorithms) / 2) * width + width / 2
 
-        bars = ax1.bar(x_positions + offset,
-                optimizations,
+        ax1.bar(x_positions + offset,
+                costs,
                 width,
-                label=f'{alg} (opt)',
+                label=f'{alg} (cost)',
                 color=colors.get(alg, 'gray'),
                 alpha=0.7)
 
-        for bar_index, bar in enumerate(bars):
-            bar_height = bar.get_height()
-            if bar_index < len(costs):
-                cost_value = int(round(costs[bar_index]))
-            else:
-                cost_value = 0
-
-            if bar_height >= 0:
-                label_y = bar_height + BAR_COST_LABEL_VERTICAL_OFFSET + idx * BAR_COST_LABEL_VERTICAL_OFFSET
-                vertical_alignment = 'bottom'
-            else:
-                label_y = bar_height - (BAR_COST_LABEL_VERTICAL_OFFSET + idx * BAR_COST_LABEL_VERTICAL_OFFSET)
-                vertical_alignment = 'top'
-
-            ax1.text(bar.get_x() + bar.get_width() / 2,
-                     label_y,
-                     f'{cost_value}',
-                     ha='center',
-                     va=vertical_alignment,
-                     fontsize=8)
-
     ax1.set_xlabel(x_label, fontsize=13)
-    ax1.set_ylabel('Optimization vs 1-split-augment (%)', fontsize=13)
+    ax1.set_ylabel('Total Cost', fontsize=13)
     ax1.set_xticks(x_positions)
     ax1.set_xticklabels(x_values, rotation=45, ha='right')
     ax1.axhline(y=0, color='gray', linestyle='--', linewidth=1, alpha=0.5)
     ax1.grid(True, alpha=0.3, axis='y')
 
-    # 右Y轴：service_rate
+    # 右Y轴：optimization（服务率只以折线形式叠加，不单独给Y轴）
     ax2 = ax1.twinx()
 
+    for idx, alg in enumerate(algorithms):
+        if alg not in data_dict:
+            continue
+
+        optimizations = [
+            data_dict[alg][i][0] for i in range(len(x_values))
+        ]
+        ax2.plot(x_positions,
+                 optimizations,
+                 marker=markers.get(alg, 'o'),
+                 color=colors.get(alg, 'gray'),
+                 label=f'{alg} (opt)',
+                 linewidth=2.5,
+                 markersize=6,
+                 alpha=0.9,
+                 linestyle=linestyles.get(alg, '-'))
+
+    # 在右Y轴上叠加服务率折线，不增加新的Y轴标签
     for idx, alg in enumerate(algorithms):
         if alg not in data_dict:
             continue
@@ -367,16 +529,14 @@ def plot_dual_axis(x_values, data_dict, x_label, title, filename):
         ]
         ax2.plot(x_positions,
                  service_rates,
-                 marker=markers.get(alg, 'o'),
+                 marker=None,
                  color=colors.get(alg, 'gray'),
                  label=f'{alg} (sr)',
-                 linewidth=2.5,
-                 markersize=6,
+                 linewidth=1.5,
                  alpha=0.9,
                  linestyle=linestyles.get(alg, '-'))
 
-    ax2.set_ylabel('Service Rate (%)', fontsize=13)
-    ax2.set_ylim([0, 105])
+    ax2.set_ylabel('Optimization vs 1-split-augment (%)', fontsize=13)
 
     # 合并图例，确保顺序正确
     handles1, labels1 = ax1.get_legend_handles_labels()
@@ -386,14 +546,21 @@ def plot_dual_axis(x_values, data_dict, x_label, title, filename):
     all_handles = []
     all_labels = []
     for alg in algorithms:
-        # 添加optimization柱状图
-        opt_label = f'{alg} (opt)'
-        if opt_label in labels1:
-            idx = labels1.index(opt_label)
+        # 添加cost柱状图
+        cost_label = f'{alg} (cost)'
+        if cost_label in labels1:
+            idx = labels1.index(cost_label)
             all_handles.append(handles1[idx])
             all_labels.append(labels1[idx])
 
-        # 添加service rate折线图
+        # 添加optimization折线图
+        opt_label = f'{alg} (opt)'
+        if opt_label in labels2:
+            idx = labels2.index(opt_label)
+            all_handles.append(handles2[idx])
+            all_labels.append(labels2[idx])
+
+        # 添加service rate折线图（无独立Y轴，仅用于趋势）
         sr_label = f'{alg} (sr)'
         if sr_label in labels2:
             idx = labels2.index(sr_label)
@@ -641,6 +808,105 @@ def main():
     # 循环2结束后，保存所有分布到一个Excel文件
     llm_excel_file = os.path.join(_LLM_DIR, 'llm.xlsx')
     save_to_excel_multi_sheet(llm_all_distributions, llm_excel_file)
+
+    # å¾ªçŽ¯3: å¸¦å®½èŒƒå›´ - LLMæœåŠ¡èµ„æºèŒƒå›´ - ç”¨æˆ·è®¡ç®—éœ€æ±‚åˆ†å¸ƒ
+    user_all_settings = {}  # {sheet_name: [rows]}
+
+    for user_distribution in DISTRIBUTION_TYPES:
+        for llm_distribution in DISTRIBUTION_TYPES:
+            distribution_name = f'{user_distribution}-{llm_distribution}'
+
+            for bandwidth in BANDWIDTH_VALUES:
+                for computation in COMPUTATION_VALUES:
+                    for pattern_index, pattern in enumerate(
+                            USER_COMPUTATION_PATTERNS):
+                        json = Entity.load_network_from_sheets()
+                        network = json['network']
+                        llms = Entity.load_llm_info(user_distribution,
+                                                    llm_distribution)
+                        users = Entity.load_user_info(user_distribution)
+
+                        users = dict(
+                            sorted(users.items(),
+                                   key=lambda item: item[1].bw,
+                                   reverse=True))
+
+                        # æ ¹æ®ç”¨æˆ·è®¡ç®—éœ€æ±‚åˆ†å¸ƒæ›´æ–°ç”¨æˆ·çš„è®¡ç®—é‡å’Œå¸¦å®½
+                        user_ids = list(users.keys())
+                        assert len(user_ids) >= len(pattern), (
+                            "User count is less than computation pattern length"
+                        )
+                        for idx, demand in enumerate(pattern):
+                            user_id = user_ids[idx]
+                            user = users[user_id]
+                            user.computation = float(demand)
+                            bw_value = USER_COMPUTATION_TO_BANDWIDTH.get(
+                                demand)
+                            assert bw_value is not None, (
+                                f"Undefined bandwidth mapping for demand {demand}"
+                            )
+                            user.bw = float(bw_value)
+
+                        set_uniform_bandwidth(network, bandwidth)
+                        set_uniform_computation(llms, computation)
+
+                        total_bw = sum(u.bw for u in users.values())
+                        assert total_bw > 0, "Total user bandwidth must be positive"
+
+                        # ä½¿ç”¨1-split-augmentç®—æ³•èŽ·å–åˆ†é…ç»“æžœå’ŒæœåŠ¡çŽ‡
+                        allocations, _, _, service_rate = run_algorithm(
+                            network, users, llms, '1-split-augment', 1)
+
+                        user_ids_ordered, ratios, served_flows = compute_user_distance_flow_ratio(
+                            allocations, users)
+
+                        # ç»˜å›¾ç”¨çš„ç”¨æˆ·æ ‡ç­¾ï¼šç”¨æˆ·ç´¢å¼•(1-based) + å¸¦å®½
+                        user_labels = []
+                        for index, uid in enumerate(user_ids_ordered):
+                            bw_value = int(users[uid].bw)
+                            user_labels.append(f'{index + 1}({bw_value})')
+
+                        title = f'带宽设置={bandwidth}, LLM服务设置={computation}'
+                        plot_filename = os.path.join(
+                            _USER_DIR,
+                            f'{distribution_name}_bw{bandwidth}_comp{computation}_pattern{pattern_index + 1}.png'
+                        )
+                        plot_user_distance_flow_ratio(user_labels, ratios,
+                                                      service_rate, title,
+                                                      plot_filename)
+
+                        sheet_name = f'{distribution_name}_bw{bandwidth}_comp{computation}_p{pattern_index + 1}'
+                        rows = user_all_settings.setdefault(sheet_name, [])
+
+                        for index, uid in enumerate(user_ids_ordered):
+                            rows.append({
+                                'user_index':
+                                index + 1,
+                                'user_id':
+                                uid,
+                                'user_bandwidth':
+                                users[uid].bw,
+                                'user_computation':
+                                users[uid].computation,
+                                'distance_per_unit_flow':
+                                ratios[index],
+                                'served_flow':
+                                served_flows[index],
+                                'bandwidth':
+                                bandwidth,
+                                'llm_computation':
+                                computation,
+                                'pattern_index':
+                                pattern_index + 1,
+                                'pattern':
+                                ','.join(str(v) for v in pattern),
+                                'service_rate':
+                                service_rate
+                            })
+
+    if user_all_settings:
+        user_excel_file = os.path.join(_USER_DIR, 'user.xlsx')
+        save_to_excel_multi_sheet(user_all_settings, user_excel_file)
 
 
 if __name__ == "__main__":
