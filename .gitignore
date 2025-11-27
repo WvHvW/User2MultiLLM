@@ -36,6 +36,7 @@ visualization/
 withdraw/
 bandwidth/
 llm/
+user/
 MANIFEST
 
 # PyInstaller

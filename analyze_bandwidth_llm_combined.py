@@ -25,7 +25,7 @@ DISTRIBUTION_TYPES = Entity.DISTRIBUTION_TYPES
 is_shared = 1
 BANDWIDTH_VALUES = list(range(500, 4250, 250))  # 500到4000，步长250
 COMPUTATION_VALUES = list(range(8, 34, 2))  # 8到32，步长2
-ALGORITHMS = ['no-split', '1-split', '100-split-augment', 'bottleneck-augment']
+ALGORITHMS = ['no-split', '1-split', '1-split-augment', 'bottleneck-augment']
 USER_COMPUTATION_PATTERNS = [
     [6, 4, 4, 4, 4, 4, 4, 2],
     [6, 6, 4, 4, 4, 4, 2, 2],
@@ -37,7 +37,6 @@ USER_COMPUTATION_TO_BANDWIDTH = {
     4: 500,
     2: 200,
 }
-
 
 # 输出目录
 _BANDWIDTH_DIR = os.path.join(os.path.dirname(__file__), 'bandwidth')
@@ -235,10 +234,9 @@ def run_algorithm(network, users, llms, algorithm_name, k=None):
             for lid, llm in llms_copy.items():
                 net.add_link(lid, T, total_bw, 0)
 
-        allocations, _, _, _ = net.successive_shortest_paths(S,
-                                                             T,
-                                                             total_bw,
-                                                             k=k)
+        # 先运行最小费用流更新边上最终流量，再基于最终流动重新分解真实路径
+        _, _, _, _ = net.successive_shortest_paths(S, T, total_bw, k=k)
+        allocations = net.decompose_flow_paths(S, T, f'{k}-split-augment')
 
         if is_shared and single_bw > 0:
             for allocation in allocations:
@@ -267,8 +265,13 @@ def run_algorithm(network, users, llms, algorithm_name, k=None):
             for lid, llm in llms_copy.items():
                 net.add_link(lid, T, total_bw, 0)
 
-        allocations, _, _, _ = net.successive_shortest_paths(
-            S, T, total_bw, k=1, use_bottleneck=True)
+        # 使用瓶颈流量推进最小费用流，结束后按最终流重新分解路径
+        _, _, _, _ = net.successive_shortest_paths(S,
+                                                   T,
+                                                   total_bw,
+                                                   k=1,
+                                                   use_bottleneck=True)
+        allocations = net.decompose_flow_paths(S, T, 'bottleneck-augment')
 
         if is_shared and single_bw > 0:
             for allocation in allocations:
@@ -338,15 +341,20 @@ def compute_user_distance_flow_ratio(allocations, users, user_order=None):
     return ordered_user_ids, ratios, served_flows
 
 
-def plot_user_distance_flow_ratio(user_labels,
-                                  ratios_by_algorithm,
-                                  service_rates_by_algorithm,
-                                  title,
-                                  filename):
+def plot_user_distance_flow_ratio(user_labels, ratios_by_algorithm,
+                                  service_rates_by_algorithm, title, filename):
     """
     绘制用户维度的路径距离与服务流量比值图，并在右Y轴上显示服务率。
     """
     x_positions = np.arange(len(user_labels))
+
+    # 兼容单算法调用场景：如果传入的是列表和标量，则封装为单算法字典
+    if not isinstance(ratios_by_algorithm, dict):
+        ratios_by_algorithm = {'100-split-augment': ratios_by_algorithm}
+    if not isinstance(service_rates_by_algorithm, dict):
+        service_rates_by_algorithm = {
+            '100-split-augment': service_rates_by_algorithm
+        }
 
     fig, ax1 = plt.subplots(figsize=(16, 8))
 
@@ -393,8 +401,7 @@ def plot_user_distance_flow_ratio(user_labels,
         if alg not in service_rates_by_algorithm:
             continue
         service_rate_percent = service_rates_by_algorithm[alg] * 100
-        ax2.plot(x_positions,
-                 [service_rate_percent] * len(x_positions),
+        ax2.plot(x_positions, [service_rate_percent] * len(x_positions),
                  linestyle=linestyles.get(alg, '--'),
                  color=colors.get(alg, 'gray'),
                  linewidth=1.5,
@@ -427,6 +434,102 @@ def plot_user_distance_flow_ratio(user_labels,
                    fontsize=9,
                    loc='upper left',
                    bbox_to_anchor=(1.15, 1))
+
+    plt.title(title, fontsize=15, fontweight='bold', pad=20)
+    plt.tight_layout()
+    plt.savefig(filename, dpi=300, bbox_inches='tight')
+    plt.close()
+
+
+def plot_user_distance_flow_ratio_bars(user_labels, ratios_by_algorithm,
+                                       service_rates_by_algorithm, title,
+                                       filename):
+    """
+    绘制用户维度的“总距离 / 被服务流量”柱状图：
+    - X 轴为用户（按照 no-split 下的分配顺序排列）
+    - 每个 X 位置有 4 根柱子：no-split, 1-split, 1-split-augment, bottleneck-augment
+    - 右 Y 轴叠加各算法的服务率折线（仅作趋势参考）
+    """
+    x_positions = np.arange(len(user_labels))
+
+    fig, ax1 = plt.subplots(figsize=(16, 8))
+
+    algorithms = [
+        'no-split', '1-split', '1-split-augment', 'bottleneck-augment'
+    ]
+    colors = {
+        'no-split': 'tab:blue',
+        '1-split': 'tab:red',
+        '1-split-augment': 'tab:green',
+        'bottleneck-augment': 'tab:pink',
+    }
+    linestyles = {
+        'no-split': '-',
+        '1-split': '--',
+        '1-split-augment': '-.',
+        'bottleneck-augment': ':',
+    }
+    markers = {
+        'no-split': 'o',
+        '1-split': 's',
+        '1-split-augment': '^',
+        'bottleneck-augment': 'D',
+    }
+
+    width = 0.8 / len(algorithms)
+
+    for idx, alg in enumerate(algorithms):
+        if alg not in ratios_by_algorithm:
+            continue
+        ratios = ratios_by_algorithm[alg]
+        offset = (idx - len(algorithms) / 2) * width + width / 2
+        ax1.bar(x_positions + offset,
+                ratios,
+                width,
+                label=f'{alg} (ratio)',
+                color=colors.get(alg, 'gray'),
+                alpha=0.7)
+
+    ax1.set_xlabel('User (bandwidth)', fontsize=13)
+    ax1.set_ylabel('Avg path distance per unit flow', fontsize=13)
+    ax1.set_xticks(x_positions)
+    ax1.set_xticklabels(user_labels, rotation=45, ha='right')
+    ax1.grid(True, alpha=0.3, axis='y')
+
+    ax2 = ax1.twinx()
+    for alg in algorithms:
+        if alg not in service_rates_by_algorithm:
+            continue
+        service_rate_percent = service_rates_by_algorithm[alg] * 100
+        ax2.plot(
+            x_positions,
+            [service_rate_percent] * len(x_positions),
+            linestyle=linestyles.get(alg, '--'),
+            color=colors.get(alg, 'gray'),
+            linewidth=1.5,
+            alpha=0.9,
+            label=f'{alg} (service rate)',
+        )
+    ax2.set_ylabel('Service Rate (%)', fontsize=13)
+    ax2.set_ylim([0, 105])
+
+    handles1, labels1 = ax1.get_legend_handles_labels()
+    handles2, labels2 = ax2.get_legend_handles_labels()
+
+    all_handles = []
+    all_labels = []
+    for label, handle in zip(labels1, handles1):
+        all_labels.append(label)
+        all_handles.append(handle)
+    for label, handle in zip(labels2, handles2):
+        all_labels.append(label)
+        all_handles.append(handle)
+
+    ax1.legend(all_handles,
+               all_labels,
+               fontsize=9,
+               loc='upper left',
+               bbox_to_anchor=(1.15, 1))
 
     plt.title(title, fontsize=15, fontweight='bold', pad=20)
     plt.tight_layout()
@@ -506,9 +609,7 @@ def plot_dual_axis(x_values, data_dict, x_label, title, filename):
         if alg not in data_dict:
             continue
 
-        optimizations = [
-            data_dict[alg][i][0] for i in range(len(x_values))
-        ]
+        optimizations = [data_dict[alg][i][0] for i in range(len(x_values))]
         ax2.plot(x_positions,
                  optimizations,
                  marker=markers.get(alg, 'o'),
@@ -597,217 +698,407 @@ def save_to_excel_multi_sheet(all_distributions_data, filename):
     print(f"  已保存所有分布到Excel: {filename}")
 
 
-def main():
-    # 循环1: 带宽大循环，嵌套LLM computation
-    bandwidth_all_distributions = {}  # {distribution_name: [rows]}
+def run_user_pattern_sweep():
+    """
+    带宽范围 × LLM 服务范围 × 用户计算需求分布的三重循环：
+    - X 轴按照用户节点流量大小降序排列；
+    - 每个 X 位置上绘制 no-split, 1-split, 100-split-augment, bottleneck-augment
+      四种算法的“总距离 / 总流量”柱状图；
+    - 同时记录所有算法的用户级指标到 user/user.xlsx。
+    """
+    user_all_settings = {}  # {sheet_name: [rows]}
 
     for user_distribution in DISTRIBUTION_TYPES:
         for llm_distribution in DISTRIBUTION_TYPES:
             distribution_name = f'{user_distribution}-{llm_distribution}'
-
-            # 存储该分布的所有数据
-            all_excel_rows = []
 
             for bandwidth in BANDWIDTH_VALUES:
-
-                # 存储每个computation下所有算法的结果
-                data_by_algorithm = {}  # {algorithm: [(opt, sr), ...]}
-
                 for computation in COMPUTATION_VALUES:
-                    # 加载网络和数据
-                    json = Entity.load_network_from_sheets()
-                    network = json['network']
-                    llms = Entity.load_llm_info(user_distribution,
-                                                llm_distribution)
-                    users = Entity.load_user_info(user_distribution)
+                    for pattern_index, pattern in enumerate(
+                            USER_COMPUTATION_PATTERNS):
+                        json = Entity.load_network_from_sheets()
+                        network = json['network']
+                        llms = Entity.load_llm_info(user_distribution,
+                                                    llm_distribution)
+                        users = Entity.load_user_info(user_distribution)
 
-                    users = dict(
-                        sorted(users.items(),
-                               key=lambda item: item[1].bw,
-                               reverse=True))
+                        users = dict(
+                            sorted(users.items(),
+                                   key=lambda item: item[1].bw,
+                                   reverse=True))
 
-                    # 设置统一参数
-                    set_uniform_bandwidth(network, bandwidth)
-                    set_uniform_computation(llms, computation)
+                        # 根据给定的用户计算需求分布重写前若干个用户的计算与带宽
+                        user_ids = list(users.keys())
+                        assert len(user_ids) >= len(pattern), (
+                            "User count is less than computation pattern length"
+                        )
+                        for idx, demand in enumerate(pattern):
+                            user_id = user_ids[idx]
+                            user = users[user_id]
+                            user.computation = float(demand)
+                            bw_value = USER_COMPUTATION_TO_BANDWIDTH.get(
+                                demand)
+                            assert bw_value is not None, (
+                                f"Undefined bandwidth mapping for demand {demand}"
+                            )
+                            user.bw = float(bw_value)
 
-                    total_bw = sum(u.bw for u in users.values())
+                        set_uniform_bandwidth(network, bandwidth)
+                        set_uniform_computation(llms, computation)
 
-                    # 运行所有算法
-                    algorithm_results = {}
+                        total_bw = sum(u.bw for u in users.values())
+                        assert total_bw > 0, "Total user bandwidth must be positive"
 
-                    # 1-split-augment作为baseline
-                    _, _, baseline_cost, _ = run_algorithm(network, users, llms,
-                                                           '1-split-augment', 1)
+                        # use descending user bandwidth as unified X-axis order
+                        user_ids_ordered = sorted(
+                            users.keys(),
+                            key=lambda uid: users[uid].bw,
+                            reverse=True)
 
-                    # no-split
-                    _, _, cost, sr = run_algorithm(network, users, llms,
-                                                   'no-split')
-                    algorithm_results['no-split'] = (cost, sr)
+                        # 依次运行四种算法，使用 no-split 的用户顺序统一 X 轴
+                        user_algorithms = [
+                            'no-split', '1-split', '1-split-augment',
+                            'bottleneck-augment'
+                        ]
+                        ratios_by_algorithm = {}
+                        service_rates_by_algorithm = {}
+                        served_flows_by_algorithm = {}
+                        user_ids_ordered = None
 
-                    # 1-split
-                    _, _, cost, sr = run_algorithm(network, users, llms,
-                                                   '1-split', 1)
-                    algorithm_results['1-split'] = (cost, sr)
+                        for alg in user_algorithms:
+                            if alg == 'no-split':
+                                allocations, _, _, service_rate = run_algorithm(
+                                    network, users, llms, 'no-split')
+                                _, ratios, served_flows = compute_user_distance_flow_ratio(
+                                    allocations,
+                                    users,
+                                    user_order=user_ids_ordered)
+                            elif alg == '1-split':
+                                allocations, _, _, service_rate = run_algorithm(
+                                    network, users, llms, '1-split', 1)
+                                _, ratios, served_flows = compute_user_distance_flow_ratio(
+                                    allocations,
+                                    users,
+                                    user_order=user_ids_ordered)
+                            elif alg == '1-split-augment':
+                                allocations, _, _, service_rate = run_algorithm(
+                                    network, users, llms, '1-split-augment', 1)
+                                _, ratios, served_flows = compute_user_distance_flow_ratio(
+                                    allocations,
+                                    users,
+                                    user_order=user_ids_ordered)
+                            elif alg == 'bottleneck-augment':
+                                allocations, _, _, service_rate = run_algorithm(
+                                    network, users, llms, 'bottleneck-augment')
+                                _, ratios, served_flows = compute_user_distance_flow_ratio(
+                                    allocations,
+                                    users,
+                                    user_order=user_ids_ordered)
+                            else:
+                                continue
 
-                    # 100-split-augment
-                    _, _, cost, sr = run_algorithm(network, users, llms,
-                                                   '100-split-augment', 100)
-                    algorithm_results['100-split-augment'] = (cost, sr)
+                            ratios_by_algorithm[alg] = ratios
+                            service_rates_by_algorithm[alg] = service_rate
+                            served_flows_by_algorithm[alg] = served_flows
 
-                    # bottleneck-augment
-                    _, _, cost, sr = run_algorithm(network, users, llms,
-                                                   'bottleneck-augment')
-                    algorithm_results['bottleneck-augment'] = (cost, sr)
+                        if user_ids_ordered is None:
+                            # 所有算法都失败时跳过该配置
+                            continue
 
-                    # 计算optimization（相对于1-split-augment）
-                    for alg, (cost, sr) in algorithm_results.items():
-                        if alg not in data_by_algorithm:
-                            data_by_algorithm[alg] = []
+                        # 构造用户标签：序号(带宽)，X 轴按 no-split 分配顺序排列
+                        user_labels = []
+                        for index, uid in enumerate(user_ids_ordered):
+                            bw_value = int(users[uid].bw)
+                            user_labels.append(f'{index + 1}({bw_value})')
 
-                        if baseline_cost > 0 and cost > 0:
-                            opt_percentage = (cost - baseline_cost) / cost * 100
-                        else:
-                            opt_percentage = 0
+                        title = f'Bandwidth={bandwidth}, LLM computation={computation}'
+                        pattern_dir = os.path.join(
+                            _USER_DIR, f'pattern{pattern_index + 1}')
+                        os.makedirs(pattern_dir, exist_ok=True)
+                        plot_filename = os.path.join(
+                            pattern_dir,
+                            f'{distribution_name}_bw{bandwidth}_comp{computation}_pattern{pattern_index + 1}.png'
+                        )
 
-                        data_by_algorithm[alg].append((opt_percentage, sr,
-                                                       cost))
+                        # 仅在 bottleneck-augment 服务率达到 100% 时才绘图
+                        bottleneck_sr = service_rates_by_algorithm.get(
+                            'bottleneck-augment', 0.0)
+                        if bottleneck_sr >= 0.9999:
+                            plot_user_distance_flow_ratio_bars(
+                                user_labels,
+                                ratios_by_algorithm,
+                                service_rates_by_algorithm,
+                                title,
+                                plot_filename,
+                            )
 
-                        # 记录到Excel行（累积到总列表）
-                        all_excel_rows.append({
-                            'bandwidth':
-                            bandwidth,
-                            'llm_computation':
-                            computation,
-                            'algorithm':
-                            alg,
-                            'total_cost':
-                            cost,
-                            'service_rate':
-                            sr,
-                            'optimization_vs_1split_augment':
-                            opt_percentage
-                        })
+                        sheet_name = f'{distribution_name}_bw{bandwidth}_comp{computation}_p{pattern_index + 1}'
+                        rows = user_all_settings.setdefault(sheet_name, [])
 
-                # 绘制图表
-                plot_filename = os.path.join(
-                    _BANDWIDTH_DIR, f'{distribution_name}_bw{bandwidth}.png')
-                plot_dual_axis(COMPUTATION_VALUES, data_by_algorithm,
-                               'LLM Computation',
-                               f'{distribution_name} - Bandwidth={bandwidth}',
-                               plot_filename)
+                        for alg in user_algorithms:
+                            if alg not in ratios_by_algorithm:
+                                continue
+                            ratios = ratios_by_algorithm[alg]
+                            served_flows = served_flows_by_algorithm.get(
+                                alg, [])
+                            service_rate = service_rates_by_algorithm.get(
+                                alg, 0.0)
 
-            # 将该分布的数据添加到总字典
-            bandwidth_all_distributions[distribution_name] = all_excel_rows
+                            for index, uid in enumerate(user_ids_ordered):
+                                distance_per_unit_flow = ratios[
+                                    index] if index < len(ratios) else 0.0
+                                served_flow = served_flows[
+                                    index] if index < len(
+                                        served_flows) else 0.0
+                                rows.append({
+                                    'user_index':
+                                    index + 1,
+                                    'user_id':
+                                    uid,
+                                    'user_bandwidth':
+                                    users[uid].bw,
+                                    'user_computation':
+                                    users[uid].computation,
+                                    'algorithm':
+                                    alg,
+                                    'distance_per_unit_flow':
+                                    distance_per_unit_flow,
+                                    'served_flow':
+                                    served_flow,
+                                    'bandwidth':
+                                    bandwidth,
+                                    'llm_computation':
+                                    computation,
+                                    'pattern_index':
+                                    pattern_index + 1,
+                                    'pattern':
+                                    ','.join(str(v) for v in pattern),
+                                    'service_rate':
+                                    service_rate
+                                })
 
-    # 循环1结束后，保存所有分布到一个Excel文件
-    bandwidth_excel_file = os.path.join(_BANDWIDTH_DIR, 'bandwidth.xlsx')
-    save_to_excel_multi_sheet(bandwidth_all_distributions,
-                               bandwidth_excel_file)
+    if user_all_settings:
+        user_excel_file = os.path.join(_USER_DIR, 'user.xlsx')
+        save_to_excel_multi_sheet(user_all_settings, user_excel_file)
 
-    # 循环2: LLM computation大循环，嵌套带宽
-    llm_all_distributions = {}  # {distribution_name: [rows]}
 
-    for user_distribution in DISTRIBUTION_TYPES:
-        for llm_distribution in DISTRIBUTION_TYPES:
-            distribution_name = f'{user_distribution}-{llm_distribution}'
+def main():
+    # # 循环1: 带宽大循环，嵌套LLM computation
+    # bandwidth_all_distributions = {}  # {distribution_name: [rows]}
 
-            # 存储该分布的所有数据
-            all_excel_rows = []
+    # for user_distribution in DISTRIBUTION_TYPES:
+    #     for llm_distribution in DISTRIBUTION_TYPES:
+    #         distribution_name = f'{user_distribution}-{llm_distribution}'
 
-            for computation in COMPUTATION_VALUES:
+    #         # 存储该分布的所有数据
+    #         all_excel_rows = []
 
-                # 存储每个bandwidth下所有算法的结果
-                data_by_algorithm = {}  # {algorithm: [(opt, sr), ...]}
+    #         for bandwidth in BANDWIDTH_VALUES:
 
-                for bandwidth in BANDWIDTH_VALUES:
-                    # 加载网络和数据
-                    json = Entity.load_network_from_sheets()
-                    network = json['network']
-                    llms = Entity.load_llm_info(user_distribution,
-                                                llm_distribution)
-                    users = Entity.load_user_info(user_distribution)
+    #             # 存储每个computation下所有算法的结果
+    #             data_by_algorithm = {}  # {algorithm: [(opt, sr), ...]}
 
-                    users = dict(
-                        sorted(users.items(),
-                               key=lambda item: item[1].bw,
-                               reverse=True))
+    #             for computation in COMPUTATION_VALUES:
+    #                 # 加载网络和数据
+    #                 json = Entity.load_network_from_sheets()
+    #                 network = json['network']
+    #                 llms = Entity.load_llm_info(user_distribution,
+    #                                             llm_distribution)
+    #                 users = Entity.load_user_info(user_distribution)
 
-                    # 设置统一参数
-                    set_uniform_bandwidth(network, bandwidth)
-                    set_uniform_computation(llms, computation)
+    #                 users = dict(
+    #                     sorted(users.items(),
+    #                            key=lambda item: item[1].bw,
+    #                            reverse=True))
 
-                    total_bw = sum(u.bw for u in users.values())
+    #                 # 设置统一参数
+    #                 set_uniform_bandwidth(network, bandwidth)
+    #                 set_uniform_computation(llms, computation)
 
-                    # 运行所有算法
-                    algorithm_results = {}
+    #                 total_bw = sum(u.bw for u in users.values())
 
-                    # 1-split-augment作为baseline
-                    _, _, baseline_cost, _ = run_algorithm(network, users, llms,
-                                                           '1-split-augment', 1)
+    #                 # 运行所有算法
+    #                 algorithm_results = {}
 
-                    # no-split
-                    _, _, cost, sr = run_algorithm(network, users, llms,
-                                                   'no-split')
-                    algorithm_results['no-split'] = (cost, sr)
+    #                 # 1-split-augment作为baseline
+    #                 _, _, baseline_cost, _ = run_algorithm(
+    #                     network, users, llms, '1-split-augment', 1)
 
-                    # 1-split
-                    _, _, cost, sr = run_algorithm(network, users, llms,
-                                                   '1-split', 1)
-                    algorithm_results['1-split'] = (cost, sr)
+    #                 # no-split
+    #                 _, _, cost, sr = run_algorithm(network, users, llms,
+    #                                                'no-split')
+    #                 algorithm_results['no-split'] = (cost, sr)
 
-                    # 100-split-augment
-                    _, _, cost, sr = run_algorithm(network, users, llms,
-                                                   '100-split-augment', 100)
-                    algorithm_results['100-split-augment'] = (cost, sr)
+    #                 # 1-split
+    #                 _, _, cost, sr = run_algorithm(network, users, llms,
+    #                                                '1-split', 1)
+    #                 algorithm_results['1-split'] = (cost, sr)
 
-                    # bottleneck-augment
-                    _, _, cost, sr = run_algorithm(network, users, llms,
-                                                   'bottleneck-augment')
-                    algorithm_results['bottleneck-augment'] = (cost, sr)
+    #                 # 100-split-augment
+    #                 _, _, cost, sr = run_algorithm(network, users, llms,
+    #                                                '100-split-augment', 100)
+    #                 algorithm_results['100-split-augment'] = (cost, sr)
 
-                    # 计算optimization（相对于1-split-augment）
-                    for alg, (cost, sr) in algorithm_results.items():
-                        if alg not in data_by_algorithm:
-                            data_by_algorithm[alg] = []
+    #                 # bottleneck-augment
+    #                 _, _, cost, sr = run_algorithm(network, users, llms,
+    #                                                'bottleneck-augment')
+    #                 algorithm_results['bottleneck-augment'] = (cost, sr)
 
-                        if baseline_cost > 0 and cost > 0:
-                            opt_percentage = (cost - baseline_cost) / cost * 100
-                        else:
-                            opt_percentage = 0
+    #                 # 计算optimization（相对于1-split-augment）
+    #                 for alg, (cost, sr) in algorithm_results.items():
+    #                     if alg not in data_by_algorithm:
+    #                         data_by_algorithm[alg] = []
 
-                        data_by_algorithm[alg].append((opt_percentage, sr,
-                                                       cost))
+    #                     if baseline_cost > 0 and cost > 0:
+    #                         opt_percentage = (cost -
+    #                                           baseline_cost) / cost * 100
+    #                     else:
+    #                         opt_percentage = 0
 
-                        # 记录到Excel行（累积到总列表）
-                        all_excel_rows.append({
-                            'llm_computation':
-                            computation,
-                            'bandwidth':
-                            bandwidth,
-                            'algorithm':
-                            alg,
-                            'total_cost':
-                            cost,
-                            'service_rate':
-                            sr,
-                            'optimization_vs_1split_augment':
-                            opt_percentage
-                        })
+    #                     data_by_algorithm[alg].append(
+    #                         (opt_percentage, sr, cost))
 
-                # 绘制图表
-                plot_filename = os.path.join(
-                    _LLM_DIR, f'{distribution_name}_comp{computation}.png')
-                plot_dual_axis(
-                    BANDWIDTH_VALUES, data_by_algorithm, 'Bandwidth',
-                    f'{distribution_name} - LLM Computation={computation}',
-                    plot_filename)
+    #                     # 记录到Excel行（累积到总列表）
+    #                     all_excel_rows.append({
+    #                         'bandwidth':
+    #                         bandwidth,
+    #                         'llm_computation':
+    #                         computation,
+    #                         'algorithm':
+    #                         alg,
+    #                         'total_cost':
+    #                         cost,
+    #                         'service_rate':
+    #                         sr,
+    #                         'optimization_vs_1split_augment':
+    #                         opt_percentage
+    #                     })
 
-            # 将该分布的数据添加到总字典
-            llm_all_distributions[distribution_name] = all_excel_rows
+    #             # 绘制图表
+    #             plot_filename = os.path.join(
+    #                 _BANDWIDTH_DIR, f'{distribution_name}_bw{bandwidth}.png')
+    #             plot_dual_axis(COMPUTATION_VALUES, data_by_algorithm,
+    #                            'LLM Computation',
+    #                            f'{distribution_name} - Bandwidth={bandwidth}',
+    #                            plot_filename)
 
-    # 循环2结束后，保存所有分布到一个Excel文件
-    llm_excel_file = os.path.join(_LLM_DIR, 'llm.xlsx')
-    save_to_excel_multi_sheet(llm_all_distributions, llm_excel_file)
+    #         # 将该分布的数据添加到总字典
+    #         bandwidth_all_distributions[distribution_name] = all_excel_rows
+
+    # # 循环1结束后，保存所有分布到一个Excel文件
+    # bandwidth_excel_file = os.path.join(_BANDWIDTH_DIR, 'bandwidth.xlsx')
+    # save_to_excel_multi_sheet(bandwidth_all_distributions,
+    #                           bandwidth_excel_file)
+
+    # # 循环2: LLM computation大循环，嵌套带宽
+    # llm_all_distributions = {}  # {distribution_name: [rows]}
+
+    # for user_distribution in DISTRIBUTION_TYPES:
+    #     for llm_distribution in DISTRIBUTION_TYPES:
+    #         distribution_name = f'{user_distribution}-{llm_distribution}'
+
+    #         # 存储该分布的所有数据
+    #         all_excel_rows = []
+
+    #         for computation in COMPUTATION_VALUES:
+
+    #             # 存储每个bandwidth下所有算法的结果
+    #             data_by_algorithm = {}  # {algorithm: [(opt, sr), ...]}
+
+    #             for bandwidth in BANDWIDTH_VALUES:
+    #                 # 加载网络和数据
+    #                 json = Entity.load_network_from_sheets()
+    #                 network = json['network']
+    #                 llms = Entity.load_llm_info(user_distribution,
+    #                                             llm_distribution)
+    #                 users = Entity.load_user_info(user_distribution)
+
+    #                 users = dict(
+    #                     sorted(users.items(),
+    #                            key=lambda item: item[1].bw,
+    #                            reverse=True))
+
+    #                 # 设置统一参数
+    #                 set_uniform_bandwidth(network, bandwidth)
+    #                 set_uniform_computation(llms, computation)
+
+    #                 total_bw = sum(u.bw for u in users.values())
+
+    #                 # 运行所有算法
+    #                 algorithm_results = {}
+
+    #                 # 1-split-augment作为baseline
+    #                 _, _, baseline_cost, _ = run_algorithm(
+    #                     network, users, llms, '1-split-augment', 1)
+
+    #                 # no-split
+    #                 _, _, cost, sr = run_algorithm(network, users, llms,
+    #                                                'no-split')
+    #                 algorithm_results['no-split'] = (cost, sr)
+
+    #                 # 1-split
+    #                 _, _, cost, sr = run_algorithm(network, users, llms,
+    #                                                '1-split', 1)
+    #                 algorithm_results['1-split'] = (cost, sr)
+
+    #                 # 100-split-augment
+    #                 _, _, cost, sr = run_algorithm(network, users, llms,
+    #                                                '100-split-augment', 100)
+    #                 algorithm_results['100-split-augment'] = (cost, sr)
+
+    #                 # bottleneck-augment
+    #                 _, _, cost, sr = run_algorithm(network, users, llms,
+    #                                                'bottleneck-augment')
+    #                 algorithm_results['bottleneck-augment'] = (cost, sr)
+
+    #                 # 计算optimization（相对于1-split-augment）
+    #                 for alg, (cost, sr) in algorithm_results.items():
+    #                     if alg not in data_by_algorithm:
+    #                         data_by_algorithm[alg] = []
+
+    #                     if baseline_cost > 0 and cost > 0:
+    #                         opt_percentage = (cost -
+    #                                           baseline_cost) / cost * 100
+    #                     else:
+    #                         opt_percentage = 0
+
+    #                     data_by_algorithm[alg].append(
+    #                         (opt_percentage, sr, cost))
+
+    #                     # 记录到Excel行（累积到总列表）
+    #                     all_excel_rows.append({
+    #                         'llm_computation':
+    #                         computation,
+    #                         'bandwidth':
+    #                         bandwidth,
+    #                         'algorithm':
+    #                         alg,
+    #                         'total_cost':
+    #                         cost,
+    #                         'service_rate':
+    #                         sr,
+    #                         'optimization_vs_1split_augment':
+    #                         opt_percentage
+    #                     })
+
+    #             # 绘制图表
+    #             plot_filename = os.path.join(
+    #                 _LLM_DIR, f'{distribution_name}_comp{computation}.png')
+    #             plot_dual_axis(
+    #                 BANDWIDTH_VALUES, data_by_algorithm, 'Bandwidth',
+    #                 f'{distribution_name} - LLM Computation={computation}',
+    #                 plot_filename)
+
+    #         # 将该分布的数据添加到总字典
+    #         llm_all_distributions[distribution_name] = all_excel_rows
+
+    # # 循环2结束后，保存所有分布到一个Excel文件
+    # llm_excel_file = os.path.join(_LLM_DIR, 'llm.xlsx')
+    # save_to_excel_multi_sheet(llm_all_distributions, llm_excel_file)
+
+    # 循环3：带宽 × LLM 服务 × 用户需求分布，新版柱状图 + Excel
+    run_user_pattern_sweep()
+    return
 
     # å¾ªçŽ¯3: å¸¦å®½èŒƒå›´ - LLMæœåŠ¡èµ„æºèŒƒå›´ - ç”¨æˆ·è®¡ç®—éœ€æ±‚åˆ†å¸ƒ
     user_all_settings = {}  # {sheet_name: [rows]}

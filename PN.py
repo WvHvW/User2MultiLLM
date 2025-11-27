@@ -263,11 +263,11 @@ def assign_user_nodes_by_distribution(G, distribution_type='uniform'):
 
     # 定义用户节点的配置
     user_choices = [{
-        'num': 8,
+        'num': 4,
         'num_users': 100,
         'cpu_demand': 4,
         'mem_demand': 8,
-        'bw_demand': 500
+        'bw_demand': 20
     }]
 
     # 计算总的用户节点数量
@@ -382,7 +382,7 @@ def assign_llm_nodes_by_distribution(G,
                     del G.nodes[n][attr]
 
     # 定义LLM候选节点的配置
-    llm_choices = [{'num': 4, 'cpu_capacity': 10, 'mem_capacity': 16}]
+    llm_choices = [{'num': 3, 'cpu_capacity': 6, 'mem_capacity': 16}]
 
     # 计算总的LLM节点数量
     total_llm_nodes = sum(choice['num'] for choice in llm_choices)
