@@ -1094,7 +1094,7 @@ def run_user_pattern_sweep():
                         all_results[(bandwidth, computation)] = algorithm_results
                         all_user_data[(bandwidth, computation)] = (user_data_results, user_ids_ordered, users)
 
-                # 生成带宽变化图（循环1逻辑）
+                # 生成带宽视角数据（循环1逻辑）
                 for bandwidth in BANDWIDTH_VALUES:
                     data_by_algorithm = {}
 
@@ -1117,15 +1117,8 @@ def run_user_pattern_sweep():
 
                             data_by_algorithm[alg].append(results[alg_key])
 
-                    # 绘制图表（文件名简化，因为已在分布子目录下）
                     if data_by_algorithm:
-                        plot_filename = os.path.join(bandwidth_dir, f'bw{bandwidth}.png')
-                        plot_dual_axis(COMPUTATION_VALUES, data_by_algorithm,
-                                      'LLM Computation',
-                                      f'{distribution_name} - Bandwidth={bandwidth}',
-                                      plot_filename)
-
-                        # 记录到bandwidth.xlsx
+                        # 仅记录到 bandwidth 视角数据，具体绘图由重绘脚本完成
                         rows = bandwidth_all_data.setdefault(distribution_name, [])
                         for alg in ['no-split', '1-split', '100-split-augment', 'bottleneck-augment']:
                             if alg not in data_by_algorithm:
@@ -1144,7 +1137,7 @@ def run_user_pattern_sweep():
                                         'total_cost': cost
                                     })
 
-                # 生成LLM容量变化图（循环2逻辑）
+                # 生成 LLM 容量视角数据（循环2逻辑）
                 for computation in COMPUTATION_VALUES:
                     data_by_algorithm = {}
 
@@ -1167,15 +1160,8 @@ def run_user_pattern_sweep():
 
                             data_by_algorithm[alg].append(results[alg_key])
 
-                    # 绘制图表（文件名简化）
                     if data_by_algorithm:
-                        plot_filename = os.path.join(llm_dir, f'comp{computation}.png')
-                        plot_dual_axis(BANDWIDTH_VALUES, data_by_algorithm,
-                                      'Bandwidth',
-                                      f'{distribution_name} - LLM Computation={computation}',
-                                      plot_filename)
-
-                        # 记录到llm.xlsx
+                        # 仅记录到 llm 视角数据，具体绘图由重绘脚本完成
                         rows = llm_all_data.setdefault(distribution_name, [])
                         for alg in ['no-split', '1-split', '100-split-augment', 'bottleneck-augment']:
                             if alg not in data_by_algorithm:
@@ -1194,7 +1180,7 @@ def run_user_pattern_sweep():
                                         'total_cost': cost
                                     })
 
-                # 生成用户级柱状图
+                # 生成用户级数据（不在此处绘图）
                 for bandwidth in BANDWIDTH_VALUES:
                     for computation in COMPUTATION_VALUES:
                         user_data_tuple = all_user_data.get((bandwidth, computation))
@@ -1222,20 +1208,7 @@ def run_user_pattern_sweep():
                             service_rates_by_algorithm[alg] = sr
                             served_flows_by_algorithm[alg] = served_flows
 
-                        # 绘制图表（文件名简化）
-                        title = f'Bandwidth={bandwidth}, LLM computation={computation}'
-                        plot_filename = os.path.join(
-                            user_level_dir,
-                            f'bw{bandwidth}_comp{computation}.png')
-
-                        plot_user_distance_flow_ratio_bars(
-                            user_labels,
-                            ratios_by_algorithm,
-                            service_rates_by_algorithm,
-                            title,
-                            plot_filename)
-
-                        # 记录到user.xlsx
+                        # 记录到 user 视角数据，实际绘图由重绘脚本完成
                         rows = user_all_data.setdefault(distribution_name, [])
                         for alg in ['no-split', '1-split', '1-split-augment', 'bottleneck-augment']:
                             if alg not in ratios_by_algorithm:
@@ -1301,17 +1274,9 @@ def main():
     """
     整合的用户分布扫描：
     对每个pattern，生成带宽变化图、LLM容量变化图
+    （当前文件只负责产生 userpattern_all.xlsx，所有绘图在独立脚本中完成）
     """
     run_user_pattern_sweep()
-
-    # 生成 userpattern_all.xlsx 后，自动基于该文件绘制“距离指标”相关图
-    try:
-        import plot_userpattern_distance_cost as _distance_plot_module
-
-        _distance_plot_module.plot_cost_vs_distance_from_excel()
-    except Exception as exc:
-        # 仅记录异常，不中断主流程
-        print(f"距离指标绘图阶段出现异常: {exc}")
 
     return
 
