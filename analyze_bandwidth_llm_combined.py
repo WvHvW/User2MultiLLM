@@ -98,6 +98,45 @@ def calculate_link_utilization(network, target_edges):
     return utilization
 
 
+def compute_llm_user_distance_indicator(network, users, llms):
+    """
+    计算每种分布下 LLM 与 User 的距离指标：
+    - 对所有 user-llm 对求最短路距离；
+    - 取这些距离的平均值 d_mean；
+    - 使用 sigmoid(d_mean) 将其归一到 (0, 1)。
+    """
+    import networkx as nx
+    import math
+
+    G = nx.DiGraph()
+    for nid in network.nodes:
+        G.add_node(nid)
+
+    for src, links in network.links.items():
+        for link in links:
+            if link.is_reverse:
+                continue
+            G.add_edge(src, link.dst, weight=link.distance)
+
+    distances = []
+    for uid in users.keys():
+        for lid in llms.keys():
+            try:
+                d = nx.shortest_path_length(G,
+                                            source=uid,
+                                            target=lid,
+                                            weight='weight')
+                distances.append(float(d))
+            except nx.NetworkXNoPath:
+                continue
+
+    if not distances:
+        return 0.0
+
+    d_mean = float(np.mean(distances))
+    return 1.0 / (1.0 + math.exp(-d_mean))
+
+
 def set_uniform_bandwidth(network, bandwidth_value):
     """将网络中所有链路的带宽设置为统一值"""
     for src, links in network.links.items():
@@ -125,7 +164,11 @@ def run_algorithm(network, users, llms, algorithm_name, k=None):
 
     if algorithm_name == 'no-split':
         allocations = []
-        for uid, u in users.items():
+        # 按带宽降序依次为用户分配，保证 no-split 是“大流量优先”
+        sorted_users = sorted(users.items(),
+                              key=lambda item: item[1].bw,
+                              reverse=True)
+        for uid, u in sorted_users:
             distances, prev = net.dijkstra_with_capacity(uid, u.bw)
             min_cost = float('inf')
             best_llm = None
@@ -940,7 +983,7 @@ def run_user_pattern_sweep():
     4. 生成用户级柱状图（保存到 pattern{i}/user_level/{distribution}/）
     5. 保存数据到 userpattern/bandwidth.xlsx, llm.xlsx, user.xlsx
     """
-    # 三个Excel的数据收集字典：{sheet_name(distribution): [rows]}
+    # 三类视角的数据收集字典：{sheet_name(distribution): [rows]}
     bandwidth_all_data = {}
     llm_all_data = {}
     user_all_data = {}
@@ -1220,20 +1263,38 @@ def run_user_pattern_sweep():
                                     'service_rate': service_rate
                                 })
 
-    # 保存三个Excel文件
-    if bandwidth_all_data:
-        bandwidth_excel_file = os.path.join(_USER_PATTERN_DIR, 'bandwidth.xlsx')
-        save_to_excel_multi_sheet(bandwidth_all_data, bandwidth_excel_file)
+    # 将 bandwidth / llm / user 三类视角汇总到一个 Excel：
+    # 通过 view 字段区分来源，sheet 仍按 distribution 命名
+    combined_data = {}
 
-    if llm_all_data:
-        llm_excel_file = os.path.join(_USER_PATTERN_DIR, 'llm.xlsx')
-        save_to_excel_multi_sheet(llm_all_data, llm_excel_file)
+    for distribution_name, rows in bandwidth_all_data.items():
+        target_rows = combined_data.setdefault(distribution_name, [])
+        for row in rows:
+            new_row = dict(row)
+            new_row['view'] = 'bandwidth'
+            target_rows.append(new_row)
 
-    if user_all_data:
-        user_excel_file = os.path.join(_USER_PATTERN_DIR, 'user.xlsx')
-        save_to_excel_multi_sheet(user_all_data, user_excel_file)
+    for distribution_name, rows in llm_all_data.items():
+        target_rows = combined_data.setdefault(distribution_name, [])
+        for row in rows:
+            new_row = dict(row)
+            new_row['view'] = 'llm'
+            target_rows.append(new_row)
 
-    print("\n所有扫描完成！")
+    for distribution_name, rows in user_all_data.items():
+        target_rows = combined_data.setdefault(distribution_name, [])
+        for row in rows:
+            new_row = dict(row)
+            new_row['view'] = 'user'
+            target_rows.append(new_row)
+
+    if combined_data:
+        combined_excel_file = os.path.join(_USER_PATTERN_DIR,
+                                           'userpattern_all.xlsx')
+        save_to_excel_multi_sheet(combined_data, combined_excel_file)
+        print(f"\n所有扫描完成！已写入: {combined_excel_file}")
+    else:
+        print("\n所有扫描完成，但没有可写入的数据！")
 
 
 def main():
@@ -1242,6 +1303,16 @@ def main():
     对每个pattern，生成带宽变化图、LLM容量变化图
     """
     run_user_pattern_sweep()
+
+    # 生成 userpattern_all.xlsx 后，自动基于该文件绘制“距离指标”相关图
+    try:
+        import plot_userpattern_distance_cost as _distance_plot_module
+
+        _distance_plot_module.plot_cost_vs_distance_from_excel()
+    except Exception as exc:
+        # 仅记录异常，不中断主流程
+        print(f"距离指标绘图阶段出现异常: {exc}")
+
     return
 
 
