@@ -263,11 +263,11 @@ def assign_user_nodes_by_distribution(G, distribution_type='uniform'):
 
     # 定义用户节点的配置
     user_choices = [{
-        'num': 4,
+        'num': 8,
         'num_users': 100,
         'cpu_demand': 4,
         'mem_demand': 8,
-        'bw_demand': 20
+        'bw_demand': 500
     }]
 
     # 计算总的用户节点数量
@@ -282,30 +282,44 @@ def assign_user_nodes_by_distribution(G, distribution_type='uniform'):
     if distribution_type == 'uniform':
         weights = np.ones(len(all_nodes))
     elif distribution_type == 'sparse':
-        # 中心区域权重高，边缘区域权重低
+        # 稀疏分布：外围区域权重高，中心区域权重低
         center_x, center_y = 50, 50
         weights = []
         for node_id in all_nodes:
             pos = G.nodes[node_id]['pos']
             distance_to_center = np.sqrt((pos[0] - center_x)**2 +
                                          (pos[1] - center_y)**2)
-            # 距离中心越近权重越高
-            weight = np.exp(-distance_to_center / 30)  # 30是缩放因子
+            # 距离中心越远权重越高（稀疏=分散在外围）
+            weight = np.exp(distance_to_center / 15)
+            weights.append(weight)
+        weights = np.array(weights)
+    elif distribution_type == 'gaussian':
+        # 高斯分布：user集中在左下角(25, 25)，模拟边缘设备
+        user_center_x, user_center_y = 25, 25
+        weights = []
+        for node_id in all_nodes:
+            pos = G.nodes[node_id]['pos']
+            distance_to_center = np.sqrt((pos[0] - user_center_x)**2 +
+                                         (pos[1] - user_center_y)**2)
+            # 高斯分布，标准差设为10使user紧密聚集
+            weight = np.exp(-0.5 * (distance_to_center / 10)**2)
             weights.append(weight)
         weights = np.array(weights)
     elif distribution_type == 'poisson':
-        # 泊松分布，基于距离中心的远近计算泊松概率权重
+        # 泊松分布，基于距离中心的远近计算泊松概率权重（更明显的峰值）
         center_x, center_y = 50, 50
-        lambda_param = 8  # 泊松分布参数，控制分布形状
+        lambda_param = 5  # 降低lambda使峰值更明显（从8降到5）
         weights = []
         for node_id in all_nodes:
             pos = G.nodes[node_id]['pos']
             distance_to_center = np.sqrt((pos[0] - center_x)**2 +
                                          (pos[1] - center_y)**2)
-            # 将距离映射到泊松分布的k值 (0到最大距离约70映射到0-14)
-            k = int(distance_to_center / 5)  # 缩放因子5
+            # 将距离映射到泊松分布的k值，缩放因子从5降到3使k值变化更敏感
+            k = int(distance_to_center / 3)
             # 计算泊松概率 P(k; λ) = (λ^k * e^(-λ)) / k!
             from math import factorial, exp
+            if k > 20:  # 限制k值避免factorial溢出
+                k = 20
             poisson_prob = (lambda_param**k *
                             exp(-lambda_param)) / factorial(k)
             weights.append(poisson_prob)
@@ -382,7 +396,7 @@ def assign_llm_nodes_by_distribution(G,
                     del G.nodes[n][attr]
 
     # 定义LLM候选节点的配置
-    llm_choices = [{'num': 3, 'cpu_capacity': 6, 'mem_capacity': 16}]
+    llm_choices = [{'num': 4, 'cpu_capacity': 10, 'mem_capacity': 16}]
 
     # 计算总的LLM节点数量
     total_llm_nodes = sum(choice['num'] for choice in llm_choices)
@@ -402,30 +416,44 @@ def assign_llm_nodes_by_distribution(G,
     if distribution_type == 'uniform':
         weights = np.ones(len(available_nodes))
     elif distribution_type == 'sparse':
-        # 中心区域权重高，边缘区域权重低
+        # 稀疏分布：外围区域权重高，中心区域权重低
         center_x, center_y = 50, 50
         weights = []
         for node_id in available_nodes:
             pos = G.nodes[node_id]['pos']
             distance_to_center = np.sqrt((pos[0] - center_x)**2 +
                                          (pos[1] - center_y)**2)
-            # 距离中心越远权重越高
-            weight = np.exp(distance_to_center / 30)  # 30是缩放因子
+            # 距离中心越远权重越高（稀疏=分散在外围）
+            weight = np.exp(distance_to_center / 15)
+            weights.append(weight)
+        weights = np.array(weights)
+    elif distribution_type == 'gaussian':
+        # 高斯分布：LLM集中在右上角(75, 75)，模拟云端数据中心
+        llm_center_x, llm_center_y = 75, 75
+        weights = []
+        for node_id in available_nodes:
+            pos = G.nodes[node_id]['pos']
+            distance_to_center = np.sqrt((pos[0] - llm_center_x)**2 +
+                                         (pos[1] - llm_center_y)**2)
+            # 高斯分布，标准差设为10使LLM紧密聚集在右上角
+            weight = np.exp(-0.5 * (distance_to_center / 10)**2)
             weights.append(weight)
         weights = np.array(weights)
     elif distribution_type == 'poisson':
-        # 泊松分布，基于距离中心的远近计算泊松概率权重
+        # 泊松分布，基于距离中心的远近计算泊松概率权重（更明显的峰值）
         center_x, center_y = 50, 50
-        lambda_param = 8  # 泊松分布参数，控制分布形状
+        lambda_param = 5  # 降低lambda使峰值更明显（与user保持一致）
         weights = []
         for node_id in available_nodes:
             pos = G.nodes[node_id]['pos']
             distance_to_center = np.sqrt((pos[0] - center_x)**2 +
                                          (pos[1] - center_y)**2)
-            # 将距离映射到泊松分布的k值 (0到最大距离约70映射到0-14)
-            k = int(distance_to_center / 5)  # 缩放因子5
+            # 将距离映射到泊松分布的k值，缩放因子从5降到3使k值变化更敏感
+            k = int(distance_to_center / 3)
             # 计算泊松概率 P(k; λ) = (λ^k * e^(-λ)) / k!
             from math import factorial, exp
+            if k > 20:  # 限制k值避免factorial溢出
+                k = 20
             poisson_prob = (lambda_param**k *
                             exp(-lambda_param)) / factorial(k)
             weights.append(poisson_prob)
@@ -494,7 +522,7 @@ else:
     Graph, common_nodes = generate_city_network(num_nodes=200, target_degree=6)
 
 # 根据不同分布类型分配节点并保存结果
-distribution_types = ['uniform', 'power_law', 'sparse', 'gaussian', 'poisson']
+distribution_types = ['uniform', 'sparse', 'poisson', 'gaussian']
 user_data = {}
 llm_data = {dist: {} for dist in distribution_types}
 

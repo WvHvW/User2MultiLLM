@@ -747,4 +747,4 @@ def visualize_network(nodes,
     plt.close()  # 关闭图像，避免在Jupyter等环境中连续显示
 
 
-DISTRIBUTION_TYPES = ['uniform', 'sparse', 'poisson']
+DISTRIBUTION_TYPES = ['uniform', 'sparse', 'poisson', 'gaussian']
