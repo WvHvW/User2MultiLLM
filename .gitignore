@@ -34,9 +34,7 @@ claude.md
 notebook/
 visualization/
 withdraw/
-bandwidth/
-llm/
-user/
+userpattern/
 MANIFEST
 
 # PyInstaller
