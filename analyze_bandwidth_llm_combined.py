@@ -994,7 +994,8 @@ def run_user_pattern_sweep():
         print(f"\n处理 Pattern {pattern_index + 1}: {pattern}")
 
         # 创建pattern目录
-        pattern_dir = os.path.join(_USER_PATTERN_DIR, f'pattern{pattern_index + 1}')
+        pattern_dir = os.path.join(_USER_PATTERN_DIR,
+                                   f'pattern{pattern_index + 1}')
         bandwidth_base_dir = os.path.join(pattern_dir, 'bandwidth')
         llm_base_dir = os.path.join(pattern_dir, 'llm')
         user_level_base_dir = os.path.join(pattern_dir, 'user_level')
@@ -1009,17 +1010,21 @@ def run_user_pattern_sweep():
                 print(f"  处理分布: {distribution_name}")
 
                 # 在各个基础目录下创建分布子目录
-                bandwidth_dir = os.path.join(bandwidth_base_dir, distribution_name)
+                bandwidth_dir = os.path.join(bandwidth_base_dir,
+                                             distribution_name)
                 llm_dir = os.path.join(llm_base_dir, distribution_name)
-                user_level_dir = os.path.join(user_level_base_dir, distribution_name)
+                user_level_dir = os.path.join(user_level_base_dir,
+                                              distribution_name)
 
                 os.makedirs(bandwidth_dir, exist_ok=True)
                 os.makedirs(llm_dir, exist_ok=True)
                 os.makedirs(user_level_dir, exist_ok=True)
 
                 # 收集所有 (bandwidth, computation) 组合的结果
-                all_results = {}  # key: (bandwidth, computation), value: {alg: (opt, sr, cost)}
-                all_user_data = {}  # key: (bandwidth, computation), value: (user_data_results, user_ids_ordered, users)
+                all_results = {
+                }  # key: (bandwidth, computation), value: {alg: (opt, sr, cost)}
+                all_user_data = {
+                }  # key: (bandwidth, computation), value: (user_data_results, user_ids_ordered, users)
 
                 # 运行所有组合
                 for bandwidth in BANDWIDTH_VALUES:
@@ -1027,12 +1032,14 @@ def run_user_pattern_sweep():
                         # 加载网络和数据
                         json = Entity.load_network_from_sheets()
                         network = json['network']
-                        llms = Entity.load_llm_info(user_distribution, llm_distribution)
+                        llms = Entity.load_llm_info(user_distribution,
+                                                    llm_distribution)
                         users = Entity.load_user_info(user_distribution)
 
-                        users = dict(sorted(users.items(),
-                                           key=lambda item: item[1].bw,
-                                           reverse=True))
+                        users = dict(
+                            sorted(users.items(),
+                                   key=lambda item: item[1].bw,
+                                   reverse=True))
 
                         # 应用用户计算需求分布模式
                         user_ids = list(users.keys())
@@ -1040,7 +1047,8 @@ def run_user_pattern_sweep():
                             user_id = user_ids[idx]
                             user = users[user_id]
                             user.computation = float(demand)
-                            bw_value = USER_COMPUTATION_TO_BANDWIDTH.get(demand)
+                            bw_value = USER_COMPUTATION_TO_BANDWIDTH.get(
+                                demand)
                             user.bw = float(bw_value)
 
                         # 设置统一参数
@@ -1048,9 +1056,10 @@ def run_user_pattern_sweep():
                         set_uniform_computation(llms, computation)
 
                         # 用户节点按带宽降序排列
-                        user_ids_ordered = sorted(users.keys(),
-                                                 key=lambda uid: users[uid].bw,
-                                                 reverse=True)
+                        user_ids_ordered = sorted(
+                            users.keys(),
+                            key=lambda uid: users[uid].bw,
+                            reverse=True)
 
                         # 运行四种算法
                         algorithm_results = {}
@@ -1058,28 +1067,52 @@ def run_user_pattern_sweep():
 
                         # 计算 baseline (1-split-augment)
                         _, _, baseline_cost, baseline_sr = run_augment_with_compute_flow_mapping(
-                            network, users, llms, '1-split-augment', k=1, flow_per_compute=125.0)
+                            network,
+                            users,
+                            llms,
+                            '1-split-augment',
+                            k=1,
+                            flow_per_compute=125.0)
 
-                        user_algorithms = ['no-split', '1-split', '1-split-augment', 'bottleneck-augment']
+                        user_algorithms = [
+                            'no-split', '1-split', '1-split-augment',
+                            'bottleneck-augment'
+                        ]
 
                         for alg in user_algorithms:
                             if alg == 'no-split':
-                                allocations, _, cost, sr = run_algorithm(network, users, llms, 'no-split')
+                                allocations, _, cost, sr = run_algorithm(
+                                    network, users, llms, 'no-split')
                             elif alg == '1-split':
                                 allocations, _, cost, sr = run_k_split_with_compute_flow_mapping(
-                                    network, users, llms, k=1, flow_per_compute=125.0)
+                                    network,
+                                    users,
+                                    llms,
+                                    k=1,
+                                    flow_per_compute=125.0)
                             elif alg == '1-split-augment':
                                 allocations, _, cost, sr = run_augment_with_compute_flow_mapping(
-                                    network, users, llms, '1-split-augment', k=1, flow_per_compute=125.0)
+                                    network,
+                                    users,
+                                    llms,
+                                    '1-split-augment',
+                                    k=1,
+                                    flow_per_compute=125.0)
                             elif alg == 'bottleneck-augment':
                                 allocations, _, cost, sr = run_augment_with_compute_flow_mapping(
-                                    network, users, llms, 'bottleneck-augment', k=1, flow_per_compute=125.0)
+                                    network,
+                                    users,
+                                    llms,
+                                    'bottleneck-augment',
+                                    k=1,
+                                    flow_per_compute=125.0)
                             else:
                                 continue
 
                             # 计算 optimization
                             if baseline_cost > 0 and cost > 0:
-                                opt_percentage = (cost - baseline_cost) / cost * 100
+                                opt_percentage = (cost -
+                                                  baseline_cost) / cost * 100
                             else:
                                 opt_percentage = 0
 
@@ -1087,12 +1120,18 @@ def run_user_pattern_sweep():
 
                             # 计算用户级指标
                             _, ratios, served_flows = compute_user_distance_flow_ratio(
-                                allocations, users, user_order=user_ids_ordered)
+                                allocations,
+                                users,
+                                user_order=user_ids_ordered)
                             user_data_results[alg] = (ratios, served_flows, sr)
 
                         # 保存结果
-                        all_results[(bandwidth, computation)] = algorithm_results
-                        all_user_data[(bandwidth, computation)] = (user_data_results, user_ids_ordered, users)
+                        all_results[(bandwidth,
+                                     computation)] = algorithm_results
+                        all_user_data[(bandwidth,
+                                       computation)] = (user_data_results,
+                                                        user_ids_ordered,
+                                                        users)
 
                 # 生成带宽视角数据（循环1逻辑）
                 for bandwidth in BANDWIDTH_VALUES:
@@ -1103,7 +1142,10 @@ def run_user_pattern_sweep():
                         if not results:
                             continue
 
-                        for alg in ['no-split', '1-split', '100-split-augment', 'bottleneck-augment']:
+                        for alg in [
+                                'no-split', '1-split', '100-split-augment',
+                                'bottleneck-augment'
+                        ]:
                             if alg == '100-split-augment':
                                 alg_key = '1-split-augment'
                             else:
@@ -1119,22 +1161,35 @@ def run_user_pattern_sweep():
 
                     if data_by_algorithm:
                         # 仅记录到 bandwidth 视角数据，具体绘图由重绘脚本完成
-                        rows = bandwidth_all_data.setdefault(distribution_name, [])
-                        for alg in ['no-split', '1-split', '100-split-augment', 'bottleneck-augment']:
+                        rows = bandwidth_all_data.setdefault(
+                            distribution_name, [])
+                        for alg in [
+                                'no-split', '1-split', '100-split-augment',
+                                'bottleneck-augment'
+                        ]:
                             if alg not in data_by_algorithm:
                                 continue
-                            for idx, computation in enumerate(COMPUTATION_VALUES):
+                            for idx, computation in enumerate(
+                                    COMPUTATION_VALUES):
                                 if idx < len(data_by_algorithm[alg]):
                                     opt, sr, cost = data_by_algorithm[alg][idx]
                                     rows.append({
-                                        'pattern_index': pattern_index + 1,
-                                        'pattern': ','.join(str(v) for v in pattern),
-                                        'bandwidth': bandwidth,
-                                        'llm_computation': computation,
-                                        'algorithm': alg,
-                                        'optimization': opt,
-                                        'service_rate': sr,
-                                        'total_cost': cost
+                                        'pattern_index':
+                                        pattern_index + 1,
+                                        'pattern':
+                                        ','.join(str(v) for v in pattern),
+                                        'bandwidth':
+                                        bandwidth,
+                                        'llm_computation':
+                                        computation,
+                                        'algorithm':
+                                        alg,
+                                        'optimization':
+                                        opt,
+                                        'service_rate':
+                                        sr,
+                                        'total_cost':
+                                        cost
                                     })
 
                 # 生成 LLM 容量视角数据（循环2逻辑）
@@ -1146,7 +1201,10 @@ def run_user_pattern_sweep():
                         if not results:
                             continue
 
-                        for alg in ['no-split', '1-split', '100-split-augment', 'bottleneck-augment']:
+                        for alg in [
+                                'no-split', '1-split', '100-split-augment',
+                                'bottleneck-augment'
+                        ]:
                             if alg == '100-split-augment':
                                 alg_key = '1-split-augment'
                             else:
@@ -1163,27 +1221,39 @@ def run_user_pattern_sweep():
                     if data_by_algorithm:
                         # 仅记录到 llm 视角数据，具体绘图由重绘脚本完成
                         rows = llm_all_data.setdefault(distribution_name, [])
-                        for alg in ['no-split', '1-split', '100-split-augment', 'bottleneck-augment']:
+                        for alg in [
+                                'no-split', '1-split', '100-split-augment',
+                                'bottleneck-augment'
+                        ]:
                             if alg not in data_by_algorithm:
                                 continue
                             for idx, bandwidth in enumerate(BANDWIDTH_VALUES):
                                 if idx < len(data_by_algorithm[alg]):
                                     opt, sr, cost = data_by_algorithm[alg][idx]
                                     rows.append({
-                                        'pattern_index': pattern_index + 1,
-                                        'pattern': ','.join(str(v) for v in pattern),
-                                        'llm_computation': computation,
-                                        'bandwidth': bandwidth,
-                                        'algorithm': alg,
-                                        'optimization': opt,
-                                        'service_rate': sr,
-                                        'total_cost': cost
+                                        'pattern_index':
+                                        pattern_index + 1,
+                                        'pattern':
+                                        ','.join(str(v) for v in pattern),
+                                        'llm_computation':
+                                        computation,
+                                        'bandwidth':
+                                        bandwidth,
+                                        'algorithm':
+                                        alg,
+                                        'optimization':
+                                        opt,
+                                        'service_rate':
+                                        sr,
+                                        'total_cost':
+                                        cost
                                     })
 
                 # 生成用户级数据（不在此处绘图）
                 for bandwidth in BANDWIDTH_VALUES:
                     for computation in COMPUTATION_VALUES:
-                        user_data_tuple = all_user_data.get((bandwidth, computation))
+                        user_data_tuple = all_user_data.get(
+                            (bandwidth, computation))
                         if not user_data_tuple:
                             continue
 
@@ -1200,7 +1270,10 @@ def run_user_pattern_sweep():
                         service_rates_by_algorithm = {}
                         served_flows_by_algorithm = {}
 
-                        for alg in ['no-split', '1-split', '1-split-augment', 'bottleneck-augment']:
+                        for alg in [
+                                'no-split', '1-split', '1-split-augment',
+                                'bottleneck-augment'
+                        ]:
                             if alg not in user_data_results:
                                 continue
                             ratios, served_flows, sr = user_data_results[alg]
@@ -1210,7 +1283,10 @@ def run_user_pattern_sweep():
 
                         # 记录到 user 视角数据，实际绘图由重绘脚本完成
                         rows = user_all_data.setdefault(distribution_name, [])
-                        for alg in ['no-split', '1-split', '1-split-augment', 'bottleneck-augment']:
+                        for alg in [
+                                'no-split', '1-split', '1-split-augment',
+                                'bottleneck-augment'
+                        ]:
                             if alg not in ratios_by_algorithm:
                                 continue
 
@@ -1219,21 +1295,36 @@ def run_user_pattern_sweep():
                             service_rate = service_rates_by_algorithm[alg]
 
                             for index, uid in enumerate(user_ids_ordered):
-                                distance_per_unit_flow = ratios[index] if index < len(ratios) else 0.0
-                                served_flow = served_flows[index] if index < len(served_flows) else 0.0
+                                distance_per_unit_flow = ratios[
+                                    index] if index < len(ratios) else 0.0
+                                served_flow = served_flows[
+                                    index] if index < len(
+                                        served_flows) else 0.0
                                 rows.append({
-                                    'pattern_index': pattern_index + 1,
-                                    'pattern': ','.join(str(v) for v in pattern),
-                                    'bandwidth': bandwidth,
-                                    'llm_computation': computation,
-                                    'user_index': index + 1,
-                                    'user_id': uid,
-                                    'user_bandwidth': users[uid].bw,
-                                    'user_computation': users[uid].computation,
-                                    'algorithm': alg,
-                                    'distance_per_unit_flow': distance_per_unit_flow,
-                                    'served_flow': served_flow,
-                                    'service_rate': service_rate
+                                    'pattern_index':
+                                    pattern_index + 1,
+                                    'pattern':
+                                    ','.join(str(v) for v in pattern),
+                                    'bandwidth':
+                                    bandwidth,
+                                    'llm_computation':
+                                    computation,
+                                    'user_index':
+                                    index + 1,
+                                    'user_id':
+                                    uid,
+                                    'user_bandwidth':
+                                    users[uid].bw,
+                                    'user_computation':
+                                    users[uid].computation,
+                                    'algorithm':
+                                    alg,
+                                    'distance_per_unit_flow':
+                                    distance_per_unit_flow,
+                                    'served_flow':
+                                    served_flow,
+                                    'service_rate':
+                                    service_rate
                                 })
 
     # 将 bandwidth / llm / user 三类视角汇总到一个 Excel：
