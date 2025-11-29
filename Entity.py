@@ -1,6 +1,7 @@
 from collections import deque
 import heapq
 import os
+import copy
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -477,6 +478,113 @@ class Network:
 
         # 重置节点势能，确保下次调用SSP时从干净状态开始
         self.node_potential.clear()
+
+
+def task_offloading_route(network,
+                          users,
+                          llms,
+                          user_ideal_llms,
+                          algorithm_name: str = "task-offloading"):
+    """
+    基于每个用户的理想 LLM 列表执行多 LLM 分流路由。
+
+    路由规则：
+    - 对每个用户 u，维护剩余带宽需求 remaining_bw = u.bw；
+    - 按 user_ideal_llms[u.id] 中的 LLM 排名顺序依次尝试；
+    - 对当前 LLM ℓ，利用其 available_computation 估算可服务的最大带宽份额：
+        max_fraction = available_computation / u.computation
+        max_bw_by_compute = max_fraction * u.bw
+      实际推流带宽 push = min(remaining_bw, max_bw_by_compute)，若 push <= 0 则跳过；
+    - 使用 network.dijkstra_with_capacity(u.id, min_capacity=push, target_id=ℓ.id)
+      在当前残余容量下寻找一条满足 push 的最短路径；如无路则跳过该 LLM；
+    - 找到路径后，沿路径调用 send_flow 推送 push，按比例扣减 ℓ.available_computation；
+    - 继续尝试下一个 LLM，直到 remaining_bw 耗尽或理想列表遍历完。
+
+    返回:
+        allocations: List[dict]，每条记录描述一次推流分配；
+        net: Network，带有本次分配后流量状态的网络副本；
+        total_cost: float，总路径成本；
+        service_rate: float，已分配总带宽 / 用户总带宽。
+    """
+    net = copy.deepcopy(network)
+
+    allocations = []
+    total_cost = 0.0
+    total_bw_demand = 0.0
+    total_bw_allocated = 0.0
+
+    for user_id, user in users.items():
+        user_bw = float(user.bw)
+        user_comp = float(user.computation)
+        if user_bw <= 0:
+            continue
+
+        total_bw_demand += user_bw
+        remaining_bw = user_bw
+
+        ideal_llms = user_ideal_llms.get(user_id)
+        if not ideal_llms:
+            continue
+
+        for llm_id in ideal_llms.keys():
+            if remaining_bw <= MIN_FLOW_EPSILON:
+                break
+
+            llm = llms.get(llm_id)
+            if llm is None:
+                continue
+
+            # 计算该 LLM 在计算资源约束下最多可为该用户承担的带宽
+            if user_comp > 0:
+                max_fraction = float(llm.available_computation) / user_comp
+                if max_fraction <= 0:
+                    continue
+                max_bw_by_compute = max_fraction * user_bw
+            else:
+                # 当用户计算需求为 0 时，不以计算资源限制分流，仅由链路容量约束
+                max_bw_by_compute = remaining_bw
+
+            push = min(remaining_bw, max_bw_by_compute)
+            if push <= MIN_FLOW_EPSILON:
+                continue
+
+            # 基于当前残余带宽寻找一条可承载 push 的最短路径
+            dist, prev = net.dijkstra_with_capacity(user_id,
+                                                    min_capacity=push,
+                                                    target_id=llm_id)
+            if dist.get(llm_id, float("inf")) == float("inf"):
+                continue
+
+            node_path, link_path = net.get_path_with_links(
+                prev, user_id, llm_id)
+            if not node_path or not link_path:
+                continue
+
+            net.send_flow(link_path, push)
+
+            # 按分流比例扣减 LLM 计算资源
+            if user_comp > 0 and user_bw > 0:
+                compute_used = (push / user_bw) * user_comp
+                llm.available_computation -= compute_used
+
+            path_cost = dist[llm_id] * push
+            total_cost += path_cost
+            total_bw_allocated += push
+            remaining_bw -= push
+
+            allocations.append({
+                "algorithm": algorithm_name,
+                "user_id": user_id,
+                "llm_id": llm_id,
+                "path": node_path,
+                "cost": path_cost,
+                "flow": push
+            })
+
+    service_rate = (total_bw_allocated /
+                    total_bw_demand) if total_bw_demand > 0 else 0.0
+
+    return allocations, net, total_cost, service_rate
 
 
 def _load_excel(path, sheet_name=0, index_col=None):

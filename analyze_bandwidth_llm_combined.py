@@ -21,17 +21,17 @@ import os
 import copy
 
 # 配置
-DISTRIBUTION_TYPES = Entity.DISTRIBUTION_TYPES
+DISTRIBUTION_TYPES = ["gaussian"]
 is_shared = 1
 BANDWIDTH_VALUES = list(range(500, 4500, 500))  # 500到4000，步长500
 COMPUTATION_VALUES = list(range(8, 34, 4))  # 8到32，步长4
 ALGORITHMS = ['no-split', '1-split', '1-split-augment', 'bottleneck-augment']
 USER_COMPUTATION_PATTERNS = [
     [4, 4, 4, 4, 4, 4, 4, 4],
-    [6, 4, 4, 4, 4, 4, 4, 2],
-    [6, 6, 4, 4, 4, 4, 2, 2],
-    [6, 6, 6, 4, 4, 2, 2, 2],
-    [6, 6, 6, 6, 2, 2, 2, 2],
+    # [6, 4, 4, 4, 4, 4, 4, 2],
+    # [6, 6, 4, 4, 4, 4, 2, 2],
+    # [6, 6, 6, 4, 4, 2, 2, 2],
+    # [6, 6, 6, 6, 2, 2, 2, 2],
 ]
 USER_COMPUTATION_TO_BANDWIDTH = {
     6: 750,
@@ -1065,7 +1065,7 @@ def run_user_pattern_sweep():
                         algorithm_results = {}
                         user_data_results = {}
 
-                        # 计算 baseline (1-split-augment)
+                        # 计算 baseline（1-split-augment）
                         _, _, baseline_cost, baseline_sr = run_augment_with_compute_flow_mapping(
                             network,
                             users,
