@@ -1,0 +1,5 @@
+import analyze_bandwidth_llm_combined
+import replot_userpattern_from_excel
+
+analyze_bandwidth_llm_combined.main()
+replot_userpattern_from_excel.main()

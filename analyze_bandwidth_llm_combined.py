@@ -21,17 +21,17 @@ import os
 import copy
 
 # 配置
-DISTRIBUTION_TYPES = ["gaussian"]
+DISTRIBUTION_TYPES = Entity.DISTRIBUTION_TYPES
 is_shared = 1
 BANDWIDTH_VALUES = list(range(500, 4500, 500))  # 500到4000，步长500
-COMPUTATION_VALUES = list(range(8, 34, 4))  # 8到32，步长4
-ALGORITHMS = ['no-split', '1-split', '1-split-augment', 'bottleneck-augment']
+COMPUTATION_VALUES = list(range(8, 39, 6))  # 8到38 ，步长6
+ALGORITHMS = ['no-split', '1-split', 'task-offloading', 'bottleneck-augment']
 USER_COMPUTATION_PATTERNS = [
     [4, 4, 4, 4, 4, 4, 4, 4],
-    # [6, 4, 4, 4, 4, 4, 4, 2],
-    # [6, 6, 4, 4, 4, 4, 2, 2],
-    # [6, 6, 6, 4, 4, 2, 2, 2],
-    # [6, 6, 6, 6, 2, 2, 2, 2],
+    [6, 4, 4, 4, 4, 4, 4, 2],
+    [6, 6, 4, 4, 4, 4, 2, 2],
+    [6, 6, 6, 4, 4, 2, 2, 2],
+    [6, 6, 6, 6, 2, 2, 2, 2],
 ]
 USER_COMPUTATION_TO_BANDWIDTH = {
     6: 750,
@@ -150,6 +150,116 @@ def set_uniform_computation(llms, computation_value):
     for llm in llms.values():
         llm.computation = computation_value
         llm.available_computation = computation_value
+
+
+def build_user_ideal_llms(network, users, llms):
+    """
+    根据理想最短路结果，为每个用户构建“理想 LLM”列表：
+    - 对每个用户 u，计算其到所有节点的理想距离；
+    - 仅保留 LLM 节点，按距离从近到远排序；
+    - 返回 {user_id: {llm_id: cost, ...}}。
+    """
+    user_ideal_llms = {}
+
+    for uid, user in users.items():
+        distances, costs = network.dijkstra_ideal(uid, user.bw)
+
+        sorted_llm_ids = sorted(
+            llms.keys(),
+            key=lambda lid: distances.get(lid, float('inf')),
+        )
+
+        ideal_llms = {}
+        for lid in sorted_llm_ids:
+            if distances.get(lid, float('inf')) == float('inf'):
+                continue
+            ideal_llms[lid] = costs[lid]
+
+        if ideal_llms:
+            user_ideal_llms[uid] = ideal_llms
+
+    return user_ideal_llms
+
+
+def run_no_split_with_ideal_llms(network,
+                                 users,
+                                 llms,
+                                 user_ideal_llms,
+                                 algorithm_name: str = 'no-split'):
+    """
+    基于每个用户的理想 LLM 列表执行 no-split：
+    - 用户按带宽降序依次分配；
+    - 对每个用户，只在其理想 LLM 列表中按顺序尝试，找到第一个
+      既有足够计算资源又存在可承载整段带宽路径的 LLM。
+
+    返回: (allocations, network, total_cost, service_rate)
+    """
+    net = copy.deepcopy(network)
+    llms_copy = copy.deepcopy(llms)
+    total_bw = sum(u.bw for u in users.values())
+
+    allocations = []
+    total_cost = 0.0
+    total_allocated = 0.0
+
+    sorted_users = sorted(users.items(),
+                          key=lambda item: item[1].bw,
+                          reverse=True)
+
+    for uid, u in sorted_users:
+        if u.bw <= 0:
+            continue
+
+        ideal_llm_ids = list(user_ideal_llms.get(uid, {}).keys())
+        if not ideal_llm_ids:
+            continue
+
+        best_llm = None
+        best_prev = None
+        best_cost = float('inf')
+
+        for lid in ideal_llm_ids:
+            llm = llms_copy.get(lid)
+            if llm is None or llm.available_computation < u.computation:
+                continue
+
+            dist, prev = net.dijkstra_with_capacity(uid, u.bw, target_id=lid)
+            if dist.get(lid, float('inf')) == float('inf'):
+                continue
+
+            best_llm = lid
+            best_prev = prev
+            best_cost = dist[lid]
+            break
+
+        if best_llm is None or best_prev is None:
+            continue
+
+        node_path, link_path = net.get_path_with_links(best_prev, uid,
+                                                       best_llm)
+        if not node_path:
+            continue
+
+        net.send_flow(link_path, u.bw)
+        if is_shared:
+            llms_copy[best_llm].available_computation -= u.computation
+
+        path_cost = best_cost * u.bw
+        total_cost += path_cost
+        total_allocated += u.bw
+
+        allocations.append({
+            'algorithm': algorithm_name,
+            'user_id': uid,
+            'llm_id': best_llm,
+            'path': node_path,
+            'cost': path_cost,
+            'flow': u.bw
+        })
+
+    service_rate = (total_allocated / total_bw) if total_bw > 0 else 0.0
+
+    return allocations, net, total_cost, service_rate
 
 
 def run_algorithm(network, users, llms, algorithm_name, k=None):
@@ -626,33 +736,33 @@ def plot_user_distance_flow_ratio(user_labels, ratios_by_algorithm,
 
     # 兼容单算法调用场景：如果传入的是列表和标量，则封装为单算法字典
     if not isinstance(ratios_by_algorithm, dict):
-        ratios_by_algorithm = {'100-split-augment': ratios_by_algorithm}
+        ratios_by_algorithm = {'task-offloading': ratios_by_algorithm}
     if not isinstance(service_rates_by_algorithm, dict):
         service_rates_by_algorithm = {
-            '100-split-augment': service_rates_by_algorithm
+            'task-offloading': service_rates_by_algorithm
         }
 
     fig, ax1 = plt.subplots(figsize=(16, 8))
 
     algorithms = [
-        'no-split', '1-split', '100-split-augment', 'bottleneck-augment'
+        'no-split', '1-split', 'task-offloading', 'bottleneck-augment'
     ]
     colors = {
         'no-split': 'tab:blue',
         '1-split': 'tab:red',
-        '100-split-augment': 'tab:purple',
+        'task-offloading': 'tab:purple',
         'bottleneck-augment': 'tab:pink'
     }
     linestyles = {
         'no-split': '-',
         '1-split': '--',
-        '100-split-augment': '-.',
+        'task-offloading': '-.',
         'bottleneck-augment': ':'
     }
     markers = {
         'no-split': 'o',
         '1-split': 's',
-        '100-split-augment': '^',
+        'task-offloading': '^',
         'bottleneck-augment': 'D'
     }
 
@@ -731,24 +841,24 @@ def plot_user_distance_flow_ratio_bars(user_labels, ratios_by_algorithm,
     fig, ax1 = plt.subplots(figsize=(16, 8))
 
     algorithms = [
-        'no-split', '1-split', '1-split-augment', 'bottleneck-augment'
+        'no-split', '1-split', 'task-offloading', 'bottleneck-augment'
     ]
     colors = {
         'no-split': 'tab:blue',
         '1-split': 'tab:red',
-        '1-split-augment': 'tab:green',
+        'task-offloading': 'tab:green',
         'bottleneck-augment': 'tab:pink',
     }
     linestyles = {
         'no-split': '-',
         '1-split': '--',
-        '1-split-augment': '-.',
+        'task-offloading': '-.',
         'bottleneck-augment': ':',
     }
     markers = {
         'no-split': 'o',
         '1-split': 's',
-        '1-split-augment': '^',
+        'task-offloading': '^',
         'bottleneck-augment': 'D',
     }
 
@@ -827,12 +937,12 @@ def plot_dual_axis(x_values, data_dict, x_label, title, filename):
     fig, ax1 = plt.subplots(figsize=(16, 8))
 
     algorithms = [
-        'no-split', '1-split', '100-split-augment', 'bottleneck-augment'
+        'no-split', '1-split', 'task-offloading', 'bottleneck-augment'
     ]
     colors = {
         'no-split': 'tab:blue',
         '1-split': 'tab:red',
-        '100-split-augment': 'tab:purple',
+        'task-offloading': 'tab:purple',
         'bottleneck-augment': 'tab:pink'
     }
 
@@ -840,14 +950,14 @@ def plot_dual_axis(x_values, data_dict, x_label, title, filename):
     linestyles = {
         'no-split': '-',
         '1-split': '--',
-        '100-split-augment': '-.',
+        'task-offloading': '-.',
         'bottleneck-augment': ':'
     }
 
     markers = {
         'no-split': 'o',
         '1-split': 's',
-        '100-split-augment': '^',
+        'task-offloading': '^',
         'bottleneck-augment': 'D'
     }
 
@@ -1061,7 +1171,7 @@ def run_user_pattern_sweep():
                             key=lambda uid: users[uid].bw,
                             reverse=True)
 
-                        # 运行四种算法
+                        # 运行四种算法（1-split-augment 仅作为 baseline，不单独绘图）
                         algorithm_results = {}
                         user_data_results = {}
 
@@ -1075,14 +1185,22 @@ def run_user_pattern_sweep():
                             flow_per_compute=125.0)
 
                         user_algorithms = [
-                            'no-split', '1-split', '1-split-augment',
+                            'no-split', '1-split', 'task-offloading',
                             'bottleneck-augment'
                         ]
 
+                        # 为 task-offloading 构建理想 LLM 列表
+                        user_ideal_llms = build_user_ideal_llms(
+                            network, users, llms)
+
                         for alg in user_algorithms:
                             if alg == 'no-split':
-                                allocations, _, cost, sr = run_algorithm(
-                                    network, users, llms, 'no-split')
+                                allocations, _, cost, sr = run_no_split_with_ideal_llms(
+                                    network,
+                                    users,
+                                    llms,
+                                    user_ideal_llms,
+                                    algorithm_name='no-split')
                             elif alg == '1-split':
                                 allocations, _, cost, sr = run_k_split_with_compute_flow_mapping(
                                     network,
@@ -1090,14 +1208,13 @@ def run_user_pattern_sweep():
                                     llms,
                                     k=1,
                                     flow_per_compute=125.0)
-                            elif alg == '1-split-augment':
-                                allocations, _, cost, sr = run_augment_with_compute_flow_mapping(
+                            elif alg == 'task-offloading':
+                                allocations, _, cost, sr = Entity.task_offloading_route(
                                     network,
                                     users,
-                                    llms,
-                                    '1-split-augment',
-                                    k=1,
-                                    flow_per_compute=125.0)
+                                    copy.deepcopy(llms),
+                                    user_ideal_llms,
+                                    algorithm_name='task-offloading')
                             elif alg == 'bottleneck-augment':
                                 allocations, _, cost, sr = run_augment_with_compute_flow_mapping(
                                     network,
@@ -1143,13 +1260,10 @@ def run_user_pattern_sweep():
                             continue
 
                         for alg in [
-                                'no-split', '1-split', '100-split-augment',
+                                'no-split', '1-split', 'task-offloading',
                                 'bottleneck-augment'
                         ]:
-                            if alg == '100-split-augment':
-                                alg_key = '1-split-augment'
-                            else:
-                                alg_key = alg
+                            alg_key = alg
 
                             if alg_key not in results:
                                 continue
@@ -1164,7 +1278,7 @@ def run_user_pattern_sweep():
                         rows = bandwidth_all_data.setdefault(
                             distribution_name, [])
                         for alg in [
-                                'no-split', '1-split', '100-split-augment',
+                                'no-split', '1-split', 'task-offloading',
                                 'bottleneck-augment'
                         ]:
                             if alg not in data_by_algorithm:
@@ -1202,13 +1316,10 @@ def run_user_pattern_sweep():
                             continue
 
                         for alg in [
-                                'no-split', '1-split', '100-split-augment',
+                                'no-split', '1-split', 'task-offloading',
                                 'bottleneck-augment'
                         ]:
-                            if alg == '100-split-augment':
-                                alg_key = '1-split-augment'
-                            else:
-                                alg_key = alg
+                            alg_key = alg
 
                             if alg_key not in results:
                                 continue
@@ -1222,7 +1333,7 @@ def run_user_pattern_sweep():
                         # 仅记录到 llm 视角数据，具体绘图由重绘脚本完成
                         rows = llm_all_data.setdefault(distribution_name, [])
                         for alg in [
-                                'no-split', '1-split', '100-split-augment',
+                                'no-split', '1-split', 'task-offloading',
                                 'bottleneck-augment'
                         ]:
                             if alg not in data_by_algorithm:
@@ -1271,7 +1382,7 @@ def run_user_pattern_sweep():
                         served_flows_by_algorithm = {}
 
                         for alg in [
-                                'no-split', '1-split', '1-split-augment',
+                                'no-split', '1-split', 'task-offloading',
                                 'bottleneck-augment'
                         ]:
                             if alg not in user_data_results:
@@ -1284,7 +1395,7 @@ def run_user_pattern_sweep():
                         # 记录到 user 视角数据，实际绘图由重绘脚本完成
                         rows = user_all_data.setdefault(distribution_name, [])
                         for alg in [
-                                'no-split', '1-split', '1-split-augment',
+                                'no-split', '1-split', 'task-offloading',
                                 'bottleneck-augment'
                         ]:
                             if alg not in ratios_by_algorithm:

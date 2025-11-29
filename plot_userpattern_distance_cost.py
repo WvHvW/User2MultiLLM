@@ -104,7 +104,7 @@ def plot_cost_vs_distance_from_excel() -> None:
 
             data_by_algorithm: Dict[str, List[Tuple[float, float, float]]] = {}
 
-            for alg in ['no-split', '1-split', '100-split-augment',
+            for alg in ['no-split', '1-split', 'task-offloading',
                         'bottleneck-augment']:
                 values: List[Tuple[float, float, float]] = []
                 for dist_name in dists_in_group:

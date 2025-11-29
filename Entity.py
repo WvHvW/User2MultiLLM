@@ -539,6 +539,9 @@ def task_offloading_route(network,
                 max_fraction = float(llm.available_computation) / user_comp
                 if max_fraction <= 0:
                     continue
+                # 单个 LLM 针对某个用户最多只能承担其自身 100% 的需求
+                if max_fraction > 1.0:
+                    max_fraction = 1.0
                 max_bw_by_compute = max_fraction * user_bw
             else:
                 # 当用户计算需求为 0 时，不以计算资源限制分流，仅由链路容量约束

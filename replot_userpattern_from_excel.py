@@ -13,8 +13,8 @@ from analyze_bandwidth_llm_combined import (
 from plot_userpattern_distance_cost import plot_cost_vs_distance_from_excel
 
 
-ALG_BW_LLM = ['no-split', '1-split', '100-split-augment', 'bottleneck-augment']
-ALG_USER = ['no-split', '1-split', '1-split-augment', 'bottleneck-augment']
+ALG_BW_LLM = ['no-split', '1-split', 'task-offloading', 'bottleneck-augment']
+ALG_USER = ['no-split', '1-split', 'task-offloading', 'bottleneck-augment']
 
 
 def _load_all() -> pd.DataFrame:
