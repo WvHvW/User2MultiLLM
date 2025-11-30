@@ -808,10 +808,10 @@ def no_split(network, users, llms, user_ideal_llms):
     if is_shared:
         for lid, llm in llms.items():
             max_customers = int(llm.computation // single_cpu)
-            network_copy.add_link(lid, T, max_customers * single_bw, 1e-19)
+            network_copy.add_one_way_link(lid, T, max_customers * single_bw, 1e-19)
     else:
         for lid, llm in llms.items():
-            network_copy.add_link(lid, T, total_bw, 1e-19)
+            network_copy.add_one_way_link(lid, T, total_bw, 1e-19)
 
     allocations = []
     remaining = total_bw
@@ -872,10 +872,10 @@ def k_split(network, users, llms, k):
     if is_shared:
         for lid, llm in llms.items():
             max_customers = int(llm.computation // single_cpu)
-            network_copy.add_link(lid, T, max_customers * single_bw, 1e-19)
+            network_copy.add_one_way_link(lid, T, max_customers * single_bw, 1e-19)
     else:
         for lid, llm in llms.items():
-            network_copy.add_link(lid, T, total_bw, 1e-19)
+            network_copy.add_one_way_link(lid, T, total_bw, 1e-19)
 
     allocations = []
     remaining = total_bw
@@ -937,10 +937,10 @@ def k_split_augment(network, users, llms, k):
     if is_shared:
         for lid, llm in llms.items():
             max_customers = int(llm.computation // single_cpu)
-            net.add_link(lid, T, max_customers * single_bw, 0)
+            net.add_one_way_link(lid, T, max_customers * single_bw, 0)
     else:
         for lid, llm in llms.items():
-            net.add_link(lid, T, total_bw, 0)
+            net.add_one_way_link(lid, T, total_bw, 0)
 
     # 运行最小费用流，获取反向边统计
     allocations, reverse_edge_count, _, _ = net.successive_shortest_paths(
@@ -975,10 +975,10 @@ def bottleneck_augment(network, users, llms):
     if is_shared:
         for lid, llm in llms.items():
             max_customers = int(llm.computation // single_cpu)
-            net.add_link(lid, T, max_customers * single_bw, 0)
+            net.add_one_way_link(lid, T, max_customers * single_bw, 0)
     else:
         for lid, llm in llms.items():
-            net.add_link(lid, T, total_bw, 0)
+            net.add_one_way_link(lid, T, total_bw, 0)
 
     # 运行最小费用流，使用瓶颈流量
     allocations, reverse_edge_flow, backtrack_iters, cost_comparisons = net.successive_shortest_paths(
@@ -999,17 +999,21 @@ if __name__ == "__main__":
         for llm_distribution in DISTRIBUTION_TYPES:
             # user_distribution = 'uniform'
             # llm_distribution = 'uniform'
-            json = Entity.load_network_from_sheets()
+
+            # 先加载LLM信息，然后加载网络（带LLM标识）
+            llms = Entity.load_llm_info(user_distribution, llm_distribution)
+            json = Entity.load_network_from_sheets(llm_ids=llms.keys())
             network = json['network']
             nodes_list = list(json['nodes'].values())
             nodes = json['nodes']
-            llms = Entity.load_llm_info(user_distribution, llm_distribution)
             users = Entity.load_user_info(user_distribution)
             for llm in llms.values():
                 nodes_list[llm.id].role = 'llm'
                 nodes_list[llm.id].deployed = 1
             for user in users.values():
                 nodes_list[user.id].role = 'user'
+
+            # 不再需要convert_to_llm_endpoints，因为网络加载时已经处理
 
             # 用户按带宽排序
             users = dict(

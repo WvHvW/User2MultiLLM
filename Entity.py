@@ -91,6 +91,179 @@ class Network:
         self.links.setdefault(dst, []).append(backward)
         self.links.setdefault(src, []).append(backward_residual)
 
+    def add_directed_link(self, src, dst, capacity, cost):
+        """
+        添加单向边，只创建 src → dst 的正向边和反向残余边。
+        用于超源/超汇等虚拟边，避免创建不需要的反向物理边。
+
+        参数:
+            src: 源节点ID
+            dst: 目标节点ID
+            capacity: 容量
+            cost: 单位流量代价
+        """
+        forward = Link(src, dst, capacity, cost, is_reverse=False)
+        forward_residual = Link(dst, src, 0, cost, is_reverse=True)
+        forward.reverse = forward_residual
+        forward_residual.reverse = forward
+        self.links.setdefault(src, []).append(forward)
+        self.links.setdefault(dst, []).append(forward_residual)
+
+    def add_one_way_link(self, src, dst, capacity, cost):
+        """
+        添加纯单向边，只创建 src → dst 的正向边，不创建反向残余边。
+        用于到LLM的边，确保LLM只能作为路径终点，不能出现在路径中间。
+
+        特性：
+        - 流量一旦进入dst，就锁定，不能被SSP算法通过反向边重新路由
+        - dst节点不会出现在任何增广路径的中间部分
+
+        参数:
+            src: 源节点ID
+            dst: 目标节点ID（通常是LLM节点）
+            capacity: 容量
+            cost: 单位流量代价
+        """
+        forward = Link(src, dst, capacity, cost, is_reverse=False)
+        forward.reverse = None  # 不创建反向残余边
+        self.links.setdefault(src, []).append(forward)
+
+    def convert_to_llm_endpoints(self, llm_ids):
+        """
+        将所有指向LLM的边转换为单向终点边（移除反向残余边）。
+        确保LLM只能作为路径终点，不能出现在路径中间。
+
+        参数:
+            llm_ids: LLM节点ID列表或集合
+        """
+        llm_set = set(llm_ids)
+
+        # 遍历所有LLM节点，移除从LLM出发的反向残余边
+        for llm_id in llm_set:
+            if llm_id not in self.links:
+                continue
+
+            # 找到所有从LLM出发的反向残余边并移除
+            links_from_llm = self.links[llm_id]
+            edges_to_remove = []
+
+            for link in links_from_llm:
+                if link.is_reverse:  # 这是反向残余边（由node→LLM产生）
+                    edges_to_remove.append(link)
+                    # 同时将正向边的reverse指针设为None
+                    if link.reverse is not None:
+                        link.reverse.reverse = None
+
+            # 移除反向残余边
+            for edge in edges_to_remove:
+                links_from_llm.remove(edge)
+
+    def find_negative_cycle_bellman_ford(self):
+        """
+        使用Bellman-Ford算法检测负环。
+
+        返回:
+            如果存在负环，返回负环的边列表；否则返回None
+        """
+        # 初始化距离
+        dist = {nid: 0.0 for nid in self.nodes}
+        parent = {nid: None for nid in self.nodes}
+        parent_link = {nid: None for nid in self.nodes}
+
+        # Bellman-Ford: 松弛 V-1 次
+        for _ in range(len(self.nodes) - 1):
+            for src, links in self.links.items():
+                for link in links:
+                    if link.residual_capacity < 1e-9:
+                        continue
+
+                    dst = link.dst
+                    cost = link.distance if not link.is_reverse else -link.reverse.distance
+
+                    if dist[src] + cost < dist[dst] - 1e-9:
+                        dist[dst] = dist[src] + cost
+                        parent[dst] = src
+                        parent_link[dst] = link
+
+        # 第V次松弛，检测负环
+        negative_node = None
+        for src, links in self.links.items():
+            for link in links:
+                if link.residual_capacity < 1e-9:
+                    continue
+
+                dst = link.dst
+                cost = link.distance if not link.is_reverse else -link.reverse.distance
+
+                if dist[src] + cost < dist[dst] - 1e-9:
+                    negative_node = dst
+                    parent[dst] = src
+                    parent_link[dst] = link
+                    break
+            if negative_node:
+                break
+
+        if negative_node is None:
+            return None
+
+        # 提取负环
+        visited = set()
+        current = negative_node
+
+        # 先回溯找到环中的节点
+        while current not in visited:
+            visited.add(current)
+            current = parent[current]
+
+        # 从环的某个节点开始提取完整的环
+        cycle_start = current
+        cycle_links = []
+        cycle_nodes = []
+
+        current = cycle_start
+        while True:
+            cycle_nodes.append(current)
+            cycle_links.append(parent_link[current])
+            current = parent[current]
+            if current == cycle_start:
+                break
+
+        return cycle_links
+
+    def cancel_negative_cycles(self):
+        """
+        消除残量网络中的所有负环。
+        通过沿负环推送流量，直到某条边饱和，使负环消失。
+
+        返回:
+            消除的负环数量
+        """
+        cycle_count = 0
+        max_iterations = len(self.nodes) * 10  # 防止死循环
+
+        for iteration in range(max_iterations):
+            cycle_links = self.find_negative_cycle_bellman_ford()
+
+            if cycle_links is None:
+                # 没有负环了
+                break
+
+            # 计算瓶颈容量
+            bottleneck = min(link.residual_capacity for link in cycle_links)
+
+            if bottleneck < 1e-9:
+                # 瓶颈容量太小，跳过
+                break
+
+            # 沿负环推送流量
+            self.send_flow(cycle_links, bottleneck)
+            cycle_count += 1
+
+        if cycle_count > 0:
+            print(f"  [Cycle Canceling] 消除了 {cycle_count} 个负环")
+
+        return cycle_count
+
     # 使用Dijkstra算法计算理想最短路径。
     def dijkstra_ideal(self, start_node_id, user_bw=1.0):
 
@@ -165,7 +338,7 @@ class Network:
                                   k: int = 1,
                                   use_bottleneck: bool = False):
         """
-        最小费用流：Successive Shortest Paths using SPFA (无势能优化)
+        最小费用流：Successive Shortest Paths using SPFA
 
         参数:
             source: 源节点ID
@@ -514,6 +687,9 @@ def task_offloading_route(network,
     total_bw_allocated = 0.0
 
     for user_id, user in users.items():
+        # 消除残量网络中的负环
+        net.cancel_negative_cycles()
+
         user_bw = float(user.bw)
         user_comp = float(user.computation)
         if user_bw <= 0:
@@ -596,13 +772,17 @@ def _load_excel(path, sheet_name=0, index_col=None):
     return pd.read_excel(path, sheet_name=sheet_name, index_col=index_col)
 
 
-def load_network_from_sheets(sheets_root=sheets_dir):
+def load_network_from_sheets(sheets_root=sheets_dir, llm_ids=None):
     """
     根据 sheets 中的表格装配网络、节点、用户与 LLM 信息。
 
     支持两种格式：
     1. 密集矩阵格式（小规模网络）：adjacency.xlsx, bandwidth.xlsx, distance.xlsx
     2. 稀疏边列表格式（大规模网络）：edge_list.xlsx
+
+    参数:
+        sheets_root: sheets目录路径
+        llm_ids: LLM节点ID集合。如果提供，指向LLM的边将创建为单向边（不可回退）
     """
     node_path = os.path.join(sheets_root, 'node.xlsx')
     edge_list_path = os.path.join(sheets_root, 'edge_list.xlsx')
@@ -613,13 +793,13 @@ def load_network_from_sheets(sheets_root=sheets_dir):
 
     if use_sparse:
         print(f"检测到稀疏格式，从 {edge_list_path} 加载边数据...")
-        return _load_network_sparse(sheets_root)
+        return _load_network_sparse(sheets_root, llm_ids)
     else:
         print(f"使用密集矩阵格式，从 {adjacency_path} 加载...")
-        return _load_network_dense(sheets_root)
+        return _load_network_dense(sheets_root, llm_ids)
 
 
-def _load_network_sparse(sheets_root):
+def _load_network_sparse(sheets_root, llm_ids=None):
     """从稀疏边列表格式加载网络（适用于大规模网络）"""
     node_path = os.path.join(sheets_root, 'node.xlsx')
     edge_list_path = os.path.join(sheets_root, 'edge_list.xlsx')
@@ -640,6 +820,9 @@ def _load_network_sparse(sheets_root):
         network.add_node(node)
         node_entities[node.id] = node
 
+    # LLM节点集合（用于快速查找）
+    llm_set = set(llm_ids) if llm_ids else set()
+
     # 从边列表添加边（去重：只处理src < dst的边）
     added_edges = set()
     for row in edge_df.itertuples(index=False):
@@ -657,14 +840,32 @@ def _load_network_sparse(sheets_root):
         if capacity <= 0 or distance <= 0:
             continue
 
-        network.add_link(src, dst, capacity, distance)
+        # 判断是否有任一端点是LLM
+        src_is_llm = src in llm_set
+        dst_is_llm = dst in llm_set
+
+        if src_is_llm and dst_is_llm:
+            # 两端都是LLM：不应该有这种边，跳过或使用普通双向边
+            network.add_link(src, dst, capacity, distance)
+        elif dst_is_llm:
+            # dst是LLM：创建 src→dst 单向边（LLM作为终点）
+            network.add_one_way_link(src, dst, capacity, distance)
+            # 同时创建 dst→src 双向边的另一半（但LLM侧不能作为起点到达src）
+            # 实际上不需要创建反向物理边，因为LLM不应该作为起点
+        elif src_is_llm:
+            # src是LLM：创建 dst→src 单向边（LLM作为终点）
+            network.add_one_way_link(dst, src, capacity, distance)
+        else:
+            # 普通边：双向
+            network.add_link(src, dst, capacity, distance)
+
         added_edges.add(edge_key)
 
     print(f"加载完成: {len(node_entities)} 节点, {len(added_edges)} 条边")
     return {'network': network, 'nodes': node_entities}
 
 
-def _load_network_dense(sheets_root):
+def _load_network_dense(sheets_root, llm_ids=None):
     """从密集矩阵格式加载网络（原有逻辑，适用于小规模网络）"""
     adjacency_path = os.path.join(sheets_root, 'adjacency.xlsx')
     bandwidth_path = os.path.join(sheets_root, 'bandwidth.xlsx')
@@ -690,6 +891,9 @@ def _load_network_dense(sheets_root):
         network.add_node(node)
         node_entities[node.id] = node
 
+    # LLM节点集合（用于快速查找）
+    llm_set = set(llm_ids) if llm_ids else set()
+
     # 只遍历上三角，避免重复添加
     for i in adj_df.index:
         for j in adj_df.columns:
@@ -701,7 +905,23 @@ def _load_network_dense(sheets_root):
             distance = float(dist_df.loc[i, j])
             if capacity <= 0 or distance <= 0:
                 continue
-            network.add_link(int(i), int(j), capacity, distance)
+
+            src, dst = int(i), int(j)
+            src_is_llm = src in llm_set
+            dst_is_llm = dst in llm_set
+
+            if src_is_llm and dst_is_llm:
+                # 两端都是LLM
+                network.add_link(src, dst, capacity, distance)
+            elif dst_is_llm:
+                # dst是LLM：创建 src→dst 单向边
+                network.add_one_way_link(src, dst, capacity, distance)
+            elif src_is_llm:
+                # src是LLM：创建 dst→src 单向边
+                network.add_one_way_link(dst, src, capacity, distance)
+            else:
+                # 普通边：双向
+                network.add_link(src, dst, capacity, distance)
 
     return {'network': network, 'nodes': node_entities}
 

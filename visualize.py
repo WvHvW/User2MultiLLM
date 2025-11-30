@@ -4,13 +4,12 @@ DISTRIBUTION_TYPES = Entity.DISTRIBUTION_TYPES
 
 for user_distribution in DISTRIBUTION_TYPES:
     for llm_distribution in DISTRIBUTION_TYPES:
-        # user_distribution = 'uniform'
-        # llm_distribution = 'uniform'
-        json = Entity.load_network_from_sheets()
+        # 先加载LLM信息，然后加载网络（带LLM标识）
+        llms = Entity.load_llm_info(user_distribution, llm_distribution)
+        json = Entity.load_network_from_sheets(llm_ids=llms.keys())
         network = json['network']
         nodes_list = list(json['nodes'].values())
         nodes = json['nodes']
-        llms = Entity.load_llm_info(user_distribution, llm_distribution)
         users = Entity.load_user_info(user_distribution)
         for llm in llms.values():
             nodes_list[llm.id].role = 'llm'

@@ -44,9 +44,10 @@ def _build_distance_indicator_cache(distributions: List[str]) -> Dict[str, float
             continue
         user_distribution, llm_distribution = parts[0], parts[1]
 
-        json_obj = Entity.load_network_from_sheets()
-        network = json_obj["network"]
+        # 先加载LLM信息，然后加载网络（带LLM标识）
         llms = Entity.load_llm_info(user_distribution, llm_distribution)
+        json_obj = Entity.load_network_from_sheets(llm_ids=llms.keys())
+        network = json_obj["network"]
         users = Entity.load_user_info(user_distribution)
 
         indicator = compute_llm_user_distance_indicator(network, users, llms)

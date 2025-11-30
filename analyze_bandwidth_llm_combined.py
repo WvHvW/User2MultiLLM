@@ -21,17 +21,17 @@ import os
 import copy
 
 # 配置
-DISTRIBUTION_TYPES = Entity.DISTRIBUTION_TYPES
+DISTRIBUTION_TYPES = ['gaussian']
 is_shared = 1
 BANDWIDTH_VALUES = list(range(500, 4500, 500))  # 500到4000，步长500
 COMPUTATION_VALUES = list(range(8, 39, 6))  # 8到38 ，步长6
 ALGORITHMS = ['no-split', '1-split', 'task-offloading', 'bottleneck-augment']
 USER_COMPUTATION_PATTERNS = [
     [4, 4, 4, 4, 4, 4, 4, 4],
-    [6, 4, 4, 4, 4, 4, 4, 2],
-    [6, 6, 4, 4, 4, 4, 2, 2],
-    [6, 6, 6, 4, 4, 2, 2, 2],
-    [6, 6, 6, 6, 2, 2, 2, 2],
+    # [6, 4, 4, 4, 4, 4, 4, 2],
+    # [6, 6, 4, 4, 4, 4, 2, 2],
+    # [6, 6, 6, 4, 4, 2, 2, 2],
+    # [6, 6, 6, 6, 2, 2, 2, 2],
 ]
 USER_COMPUTATION_TO_BANDWIDTH = {
     6: 750,
@@ -311,124 +311,192 @@ def run_algorithm(network, users, llms, algorithm_name, k=None):
             })
 
     elif 'split' in algorithm_name and 'augment' not in algorithm_name:
-        # k-split
+        # k-split（无超源，逐用户增广）
         u0 = next(iter(users.values()))
         single_bw = u0.bw
         single_cpu = u0.computation
 
-        S, T = -1, -2
-        net.add_node(Entity.Node(S, 0, 0))
+        T = -2
         net.add_node(Entity.Node(T, 0, 0))
 
-        for uid, u in users.items():
-            net.add_link(S, uid, u.bw, 0)
-
+        # LLM -> T（只创建单向边，不创建反向物理边）
         if is_shared:
             for lid, llm in llms_copy.items():
                 max_customers = int(llm.computation // single_cpu)
-                net.add_link(lid, T, max_customers * single_bw, 0)
+                net.add_one_way_link(lid, T, max_customers * single_bw, 0)
         else:
             for lid, llm in llms_copy.items():
-                net.add_link(lid, T, total_bw, 0)
+                net.add_one_way_link(lid, T, total_bw, 0)
 
         allocations = []
-        remaining = total_bw
 
-        while remaining > 1e-9:
-            push = min(k, remaining)
-            dist, prev = net.dijkstra_with_capacity(S, push)
+        # 按带宽降序排序用户（和no-split统一）
+        sorted_users = sorted(users.items(),
+                              key=lambda item: item[1].bw,
+                              reverse=True)
 
-            if dist[T] == float('inf'):
-                break
+        # 逐用户增广
+        for uid, u in sorted_users:
+            # 消除残量网络中的负环
+            net.cancel_negative_cycles()
 
-            node_path, link_path = net.get_path_with_links(prev, S, T)
-            if not node_path:
-                break
+            remaining = u.bw
 
-            user_id = node_path[1]
-            llm_id = node_path[-2]
+            while remaining > 1e-9:
+                push = min(k, remaining)
+                dist, prev = net.dijkstra_with_capacity(uid, push, target_id=T)
 
-            net.send_flow(link_path, push)
-            if is_shared:
-                llms_copy[llm_id].available_computation -= single_cpu
+                if dist.get(T, float('inf')) == float('inf'):
+                    break
 
-            path_cost = dist[T] * push
-            allocations.append({
-                'algorithm': f'{k}-split',
-                'user_id': user_id,
-                'llm_id': llm_id,
-                'path': node_path[1:-1],
-                'cost': path_cost,
-                'flow': push
-            })
-            remaining -= push
+                node_path, link_path = net.get_path_with_links(prev, uid, T)
+                if not node_path or len(node_path) < 2:
+                    break
+
+                llm_id = node_path[-2]  # T的前一个节点是LLM
+
+                net.send_flow(link_path, push)
+                if is_shared:
+                    llms_copy[llm_id].available_computation -= single_cpu
+
+                path_cost = dist[T] * push
+                allocations.append({
+                    'algorithm': f'{k}-split',
+                    'user_id': uid,
+                    'llm_id': llm_id,
+                    'path': node_path[:-1],  # 去掉T
+                    'cost': path_cost,
+                    'flow': push
+                })
+                remaining -= push
 
     elif 'augment' in algorithm_name and 'bottleneck' not in algorithm_name:
-        # k-split-augment
+        # k-split-augment（无超源，逐用户增广）
         u0 = next(iter(users.values()))
         single_bw = u0.bw
         single_cpu = u0.computation
 
-        S, T = -1, -2
-        net.add_node(Entity.Node(S, 0, 0))
+        T = -2
         net.add_node(Entity.Node(T, 0, 0))
 
-        for uid, u in users.items():
-            net.add_link(S, uid, u.bw, 0)
-
+        # LLM -> T
         if is_shared:
             for lid, llm in llms_copy.items():
                 max_customers = int(llm.computation // single_cpu)
-                net.add_link(lid, T, max_customers * single_bw, 0)
+                net.add_one_way_link(lid, T, max_customers * single_bw, 0)
         else:
             for lid, llm in llms_copy.items():
-                net.add_link(lid, T, total_bw, 0)
+                net.add_one_way_link(lid, T, total_bw, 0)
 
-        # 先运行最小费用流更新边上最终流量，再基于最终流动重新分解真实路径
-        _, _, _, _ = net.successive_shortest_paths(S, T, total_bw, k=k)
-        allocations = net.decompose_flow_paths(S, T, f'{k}-split-augment')
+        allocations = []
 
-        if is_shared and single_bw > 0:
-            for allocation in allocations:
-                llm_id = allocation['llm_id']
-                flow_units = allocation['flow'] / single_bw
-                llms_copy[
-                    llm_id].available_computation -= single_cpu * flow_units
+        # 按带宽降序排序用户（和no-split统一）
+        sorted_users = sorted(users.items(),
+                              key=lambda item: item[1].bw,
+                              reverse=True)
+
+        # 逐用户增广
+        for uid, u in sorted_users:
+            # 消除残量网络中的负环
+            net.cancel_negative_cycles()
+
+            remaining = u.bw
+
+            while remaining > 1e-9:
+                push = min(k, remaining)
+                dist, prev = net.dijkstra_with_capacity(uid, push, target_id=T)
+
+                if dist.get(T, float('inf')) == float('inf'):
+                    break
+
+                node_path, link_path = net.get_path_with_links(prev, uid, T)
+                if not node_path or len(node_path) < 2:
+                    break
+
+                llm_id = node_path[-2]  # T的前一个节点是LLM
+
+                net.send_flow(link_path, push)
+                if is_shared:
+                    llms_copy[llm_id].available_computation -= single_cpu
+
+                path_cost = dist[T] * push
+                allocations.append({
+                    'algorithm': f'{k}-split-augment',
+                    'user_id': uid,
+                    'llm_id': llm_id,
+                    'path': node_path[:-1],  # 去掉T
+                    'cost': path_cost,
+                    'flow': push
+                })
+                remaining -= push
 
     elif algorithm_name == 'bottleneck-augment':
+        # bottleneck-augment（无超源，逐用户增广，每次推瓶颈流量）
         u0 = next(iter(users.values()))
         single_bw = u0.bw
         single_cpu = u0.computation
 
-        S, T = -1, -2
-        net.add_node(Entity.Node(S, 0, 0))
+        T = -2
         net.add_node(Entity.Node(T, 0, 0))
 
-        for uid, u in users.items():
-            net.add_link(S, uid, u.bw, 0)
-
+        # LLM -> T
         if is_shared:
             for lid, llm in llms_copy.items():
                 max_customers = int(llm.computation // single_cpu)
-                net.add_link(lid, T, max_customers * single_bw, 0)
+                net.add_one_way_link(lid, T, max_customers * single_bw, 0)
         else:
             for lid, llm in llms_copy.items():
-                net.add_link(lid, T, total_bw, 0)
+                net.add_one_way_link(lid, T, total_bw, 0)
 
-        # 使用瓶颈流量推进最小费用流，结束后按最终流重新分解路径
-        _, _, _, _ = net.successive_shortest_paths(S,
-                                                   T,
-                                                   total_bw,
-                                                   k=1,
-                                                   use_bottleneck=True)
-        allocations = net.decompose_flow_paths(S, T, 'bottleneck-augment')
+        allocations = []
 
-        if is_shared and single_bw > 0:
-            for allocation in allocations:
-                llm_id = allocation['llm_id']
-                flow_units = allocation['flow'] / single_bw
-                llms_copy[
-                    llm_id].available_computation -= single_cpu * flow_units
+        # 按带宽降序排序用户（和no-split统一）
+        sorted_users = sorted(users.items(),
+                              key=lambda item: item[1].bw,
+                              reverse=True)
+
+        # 逐用户增广（使用瓶颈流量）
+        for uid, u in sorted_users:
+            remaining = u.bw
+
+            while remaining > 1e-9:
+                # 找最短路径
+                dist, prev = net.dijkstra_with_capacity(uid,
+                                                        remaining,
+                                                        target_id=T)
+
+                if dist.get(T, float('inf')) == float('inf'):
+                    break
+
+                node_path, link_path = net.get_path_with_links(prev, uid, T)
+                if not node_path or len(node_path) < 2:
+                    break
+
+                # 计算瓶颈流量
+                bottleneck = remaining
+                for link in link_path:
+                    available = link.capacity - link.flow
+                    bottleneck = min(bottleneck, available)
+
+                if bottleneck < 1e-9:
+                    break
+
+                llm_id = node_path[-2]  # T的前一个节点是LLM
+
+                net.send_flow(link_path, bottleneck)
+                if is_shared:
+                    llms_copy[llm_id].available_computation -= single_cpu
+
+                path_cost = dist[T] * bottleneck
+                allocations.append({
+                    'algorithm': 'bottleneck-augment',
+                    'user_id': uid,
+                    'llm_id': llm_id,
+                    'path': node_path[:-1],  # 去掉T
+                    'cost': path_cost,
+                    'flow': bottleneck
+                })
+                remaining -= bottleneck
 
     total_cost = sum(a['cost'] for a in allocations)
     total_allocated = sum(a['flow'] for a in allocations)
@@ -498,71 +566,112 @@ def run_augment_with_compute_flow_mapping(network,
                                           k=None,
                                           flow_per_compute: float = 125.0):
     """
-    在不改动底层 Entity.Network 实现的前提下，基于
-    “1 计算需求 = flow_per_compute 单位流量” 的映射，
-    为 augment 系列算法（k-split-augment / bottleneck-augment）
-    构造超源/超汇网络并调用 SSP + 路径分解。
+    无超源版本的augment算法：
+    - 按大流量优先顺序逐用户分配
+    - 只使用超汇T聚合LLM容量
+    - 每个用户从自己到T找增广路径
 
     返回 (allocations, net, total_cost, service_rate)
     """
     net = copy.deepcopy(network)
     llms_copy = copy.deepcopy(llms)
 
-    S, T = -1, -2
-    net.add_node(Entity.Node(S, 0, 0))
+    T = -2
     net.add_node(Entity.Node(T, 0, 0))
 
-    # 用户侧：按计算需求映射成总流量需求
-    epsilon_cost = 1e-6
-    total_flow_demand = 0.0
-    for uid, u in users.items():
-        demand_flow = u.bw
-        if demand_flow <= 0:
-            continue
-        total_flow_demand += demand_flow
-        net.add_link(S, uid, demand_flow, epsilon_cost)
+    # 用户侧总流量需求
+    total_flow_demand = sum(u.bw for u in users.values())
 
     if total_flow_demand <= 0:
         return [], net, 0.0, 0.0
 
-    # LLM 侧：每 1 计算单位可以支撑 flow_per_compute 单位流量
+    # LLM -> T: 容量 = llm.computation * flow_per_compute
+    epsilon_cost = 1e-6
     if is_shared:
         for lid, llm in llms_copy.items():
             cap_flow = float(llm.computation) * flow_per_compute
             if cap_flow <= 0:
                 continue
-            net.add_link(lid, T, cap_flow, epsilon_cost)
+            net.add_one_way_link(lid, T, cap_flow, epsilon_cost)
     else:
         for lid, llm in llms_copy.items():
-            net.add_link(lid, T, total_flow_demand, epsilon_cost)
+            net.add_one_way_link(lid, T, total_flow_demand, epsilon_cost)
+
+    allocations = []
+
+    # 按带宽降序排序用户（和no-split统一）
+    sorted_users = sorted(users.items(),
+                          key=lambda item: item[1].bw,
+                          reverse=True)
 
     use_bottleneck = (algorithm_name == 'bottleneck-augment')
 
-    if use_bottleneck:
-        _, _, _, _ = net.successive_shortest_paths(S,
-                                                   T,
-                                                   total_flow_demand,
-                                                   k=1,
-                                                   use_bottleneck=True)
-        decompose_name = 'bottleneck-augment'
-    else:
-        if k is None:
-            raise ValueError("k must be provided for k-split-augment")
-        _, _, _, _ = net.successive_shortest_paths(S,
-                                                   T,
-                                                   total_flow_demand,
-                                                   k=k)
-        decompose_name = f'{k}-split-augment'
+    # 逐用户增广
+    for uid, u in sorted_users:
+        # 消除残量网络中的负环
+        net.cancel_negative_cycles()
 
-    allocations = net.decompose_flow_paths(S, T, decompose_name)
+        remaining = u.bw
 
-    # 按映射扣减 LLM 计算资源：每 flow_per_compute 流量对应 1 计算单位
-    if is_shared and flow_per_compute > 0:
-        for allocation in allocations:
-            llm_id = allocation['llm_id']
-            compute_used = allocation['flow'] / flow_per_compute
-            if llm_id in llms_copy:
-                llms_copy[llm_id].available_computation -= compute_used
+        while remaining > 1e-9:
+            if use_bottleneck:
+                # bottleneck: 每次推瓶颈流量
+                dist, prev = net.dijkstra_with_capacity(uid,
+                                                        remaining,
+                                                        target_id=T)
+
+                if dist.get(T, float('inf')) == float('inf'):
+                    break
+
+                node_path, link_path = net.get_path_with_links(prev, uid, T)
+                if not node_path or len(node_path) < 2:
+                    break
+
+                # 计算瓶颈流量
+                bottleneck = remaining
+                for link in link_path:
+                    available = link.capacity - link.flow
+                    bottleneck = min(bottleneck, available)
+
+                if bottleneck < 1e-9:
+                    break
+
+                push = bottleneck
+            else:
+                # k-split-augment: 每次推k个单位
+                if k is None:
+                    raise ValueError("k must be provided for k-split-augment")
+
+                push = min(k, remaining)
+                dist, prev = net.dijkstra_with_capacity(uid, push, target_id=T)
+
+                if dist.get(T, float('inf')) == float('inf'):
+                    break
+
+                node_path, link_path = net.get_path_with_links(prev, uid, T)
+                if not node_path or len(node_path) < 2:
+                    break
+
+            llm_id = node_path[-2]  # T的前一个节点是LLM
+
+            net.send_flow(link_path, push)
+
+            # 扣减计算资源
+            if is_shared and flow_per_compute > 0:
+                compute_used = push / flow_per_compute
+                if llm_id in llms_copy:
+                    llms_copy[llm_id].available_computation -= compute_used
+
+            path_cost = dist[T] * push
+            allocations.append({
+                'algorithm': algorithm_name,
+                'user_id': uid,
+                'llm_id': llm_id,
+                'path': node_path[:-1],  # 去掉T
+                'cost': path_cost,
+                'flow': push
+            })
+            remaining -= push
 
     total_cost = sum(a['cost'] for a in allocations)
     total_allocated = sum(a['flow'] for a in allocations)
@@ -578,71 +687,75 @@ def run_k_split_with_compute_flow_mapping(network,
                                           k: int,
                                           flow_per_compute: float = 100.0):
     """
-    基于“1 计算 = flow_per_compute 流量”的映射，实现 k-split 版本：
-    - S->user 容量 = user.computation * flow_per_compute
-    - llm->T 容量 = llm.computation * flow_per_compute
-    - 每次增广推送 k 个“计算单位”，即 k * flow_per_compute 的流量
+    无超源版本的k-split：
+    - 按大流量优先顺序逐用户分配
+    - 只使用超汇T聚合LLM容量
+    - 每次推送k个单位流量
     """
     net = copy.deepcopy(network)
     llms_copy = copy.deepcopy(llms)
 
-    S, T = -1, -2
-    net.add_node(Entity.Node(S, 0, 0))
+    T = -2
     net.add_node(Entity.Node(T, 0, 0))
 
-    total_flow_demand = 0.0
-    for uid, u in users.items():
-        demand_flow = u.bw
-        if demand_flow <= 0:
-            continue
-        total_flow_demand += demand_flow
-        net.add_link(S, uid, demand_flow, 0)
+    total_flow_demand = sum(u.bw for u in users.values())
 
     if total_flow_demand <= 0:
         return [], net, 0.0, 0.0
 
+    # LLM -> T
     if is_shared:
         for lid, llm in llms_copy.items():
             cap_flow = float(llm.computation) * flow_per_compute
             if cap_flow <= 0:
                 continue
-            net.add_link(lid, T, cap_flow, 0)
+            net.add_one_way_link(lid, T, cap_flow, 0)
     else:
         for lid, llm in llms_copy.items():
-            net.add_link(lid, T, total_flow_demand, 0)
+            net.add_one_way_link(lid, T, total_flow_demand, 0)
 
     allocations = []
-    remaining = total_flow_demand
 
-    while remaining > 1e-9:
-        push = min(k * flow_per_compute, remaining)
-        dist, prev = net.dijkstra_with_capacity(S, push)
+    # 按带宽降序排序用户（和no-split统一）
+    sorted_users = sorted(users.items(),
+                          key=lambda item: item[1].bw,
+                          reverse=True)
 
-        if dist[T] == float('inf'):
-            break
+    # 逐用户增广
+    for uid, u in sorted_users:
+        # 消除残量网络中的负环
+        net.cancel_negative_cycles()
 
-        node_path, link_path = net.get_path_with_links(prev, S, T)
-        if not node_path:
-            break
+        remaining = u.bw
 
-        user_id = node_path[1]
-        llm_id = node_path[-2]
+        while remaining > 1e-9:
+            push = min(k * flow_per_compute, remaining)
+            dist, prev = net.dijkstra_with_capacity(uid, push, target_id=T)
 
-        net.send_flow(link_path, push)
-        if is_shared and flow_per_compute > 0:
-            compute_used = push / flow_per_compute
-            llms_copy[llm_id].available_computation -= compute_used
+            if dist.get(T, float('inf')) == float('inf'):
+                break
 
-        path_cost = dist[T] * push
-        allocations.append({
-            'algorithm': f'{k}-split',
-            'user_id': user_id,
-            'llm_id': llm_id,
-            'path': node_path[1:-1],
-            'cost': path_cost,
-            'flow': push
-        })
-        remaining -= push
+            node_path, link_path = net.get_path_with_links(prev, uid, T)
+            if not node_path or len(node_path) < 2:
+                break
+
+            llm_id = node_path[-2]
+
+            net.send_flow(link_path, push)
+            if is_shared and flow_per_compute > 0:
+                compute_used = push / flow_per_compute
+                llms_copy[llm_id].available_computation -= compute_used
+
+            path_cost = dist[T] * push
+            allocations.append({
+                'algorithm': f'{k}-split',
+                'user_id': uid,
+                'llm_id': llm_id,
+                'path': node_path[:-1],
+                'cost': path_cost,
+                'flow': push
+            })
+            remaining -= push
 
     total_cost = sum(a['cost'] for a in allocations)
     total_allocated = sum(a['flow'] for a in allocations)
@@ -654,26 +767,19 @@ def run_k_split_with_compute_flow_mapping(network,
 
 def run_k_split_with_compute_flow_mapping_v2(network, users, llms, k: int):
     """
-    k-split 在第三循环下的“计算 → 流量”映射版本：
-    - S->user 容量 = user.computation，总计算需求，距离为极小值；
-    - llm->T 容量 = llm.computation * 125，距离为极小值；
-    - 每次增广推送 k 个“计算单位”（即 k 的流量）。
+    无超源版本的k-split（v2）：
+    - 按大流量优先顺序逐用户分配
+    - 只使用超汇T聚合LLM容量
+    - 每次推送k个计算单位
     """
     net = copy.deepcopy(network)
     llms_copy = copy.deepcopy(llms)
 
-    S, T = -1, -2
-    net.add_node(Entity.Node(S, 0, 0))
+    T = -2
     net.add_node(Entity.Node(T, 0, 0))
 
     epsilon_cost = 1e-6
-    total_flow_demand = 0.0
-    for uid, u in users.items():
-        demand = float(u.computation)
-        if demand <= 0:
-            continue
-        total_flow_demand += demand
-        net.add_link(S, uid, demand, epsilon_cost)
+    total_flow_demand = sum(float(u.computation) for u in users.values())
 
     if total_flow_demand <= 0:
         return [], net, 0.0, 0.0
@@ -684,40 +790,50 @@ def run_k_split_with_compute_flow_mapping_v2(network, users, llms, k: int):
             cap = float(llm.computation) * flow_per_compute
             if cap <= 0:
                 continue
-            net.add_link(lid, T, cap, epsilon_cost)
+            net.add_one_way_link(lid, T, cap, epsilon_cost)
     else:
         for lid, llm in llms_copy.items():
-            net.add_link(lid, T, total_flow_demand, epsilon_cost)
+            net.add_one_way_link(lid, T, total_flow_demand, epsilon_cost)
 
     allocations = []
-    remaining = total_flow_demand
 
-    while remaining > 1e-9:
-        push = min(float(k), remaining)
-        dist, prev = net.dijkstra_with_capacity(S, push)
+    # 按带宽降序排序用户（和no-split统一）
+    sorted_users = sorted(users.items(),
+                          key=lambda item: item[1].bw,
+                          reverse=True)
 
-        if dist[T] == float('inf'):
-            break
+    # 逐用户增广
+    for uid, u in sorted_users:
+        # 消除残量网络中的负环
+        net.cancel_negative_cycles()
 
-        node_path, link_path = net.get_path_with_links(prev, S, T)
-        if not node_path:
-            break
+        remaining = float(u.computation)
 
-        user_id = node_path[1]
-        llm_id = node_path[-2]
+        while remaining > 1e-9:
+            push = min(float(k), remaining)
+            dist, prev = net.dijkstra_with_capacity(uid, push, target_id=T)
 
-        net.send_flow(link_path, push)
+            if dist.get(T, float('inf')) == float('inf'):
+                break
 
-        path_cost = dist[T] * push
-        allocations.append({
-            'algorithm': f'{k}-split',
-            'user_id': user_id,
-            'llm_id': llm_id,
-            'path': node_path[1:-1],
-            'cost': path_cost,
-            'flow': push
-        })
-        remaining -= push
+            node_path, link_path = net.get_path_with_links(prev, uid, T)
+            if not node_path or len(node_path) < 2:
+                break
+
+            llm_id = node_path[-2]
+
+            net.send_flow(link_path, push)
+
+            path_cost = dist[T] * push
+            allocations.append({
+                'algorithm': f'{k}-split',
+                'user_id': uid,
+                'llm_id': llm_id,
+                'path': node_path[:-1],
+                'cost': path_cost,
+                'flow': push
+            })
+            remaining -= push
 
     total_cost = sum(a['cost'] for a in allocations)
     total_allocated = sum(a['flow'] for a in allocations)
@@ -1139,11 +1255,12 @@ def run_user_pattern_sweep():
                 # 运行所有组合
                 for bandwidth in BANDWIDTH_VALUES:
                     for computation in COMPUTATION_VALUES:
-                        # 加载网络和数据
-                        json = Entity.load_network_from_sheets()
-                        network = json['network']
+                        # 先加载LLM信息，然后加载网络（带LLM标识）
                         llms = Entity.load_llm_info(user_distribution,
                                                     llm_distribution)
+                        json = Entity.load_network_from_sheets(
+                            llm_ids=llms.keys())
+                        network = json['network']
                         users = Entity.load_user_info(user_distribution)
 
                         users = dict(
@@ -1164,6 +1281,8 @@ def run_user_pattern_sweep():
                         # 设置统一参数
                         set_uniform_bandwidth(network, bandwidth)
                         set_uniform_computation(llms, computation)
+
+                        # 不再需要convert_to_llm_endpoints，因为网络加载时已经处理
 
                         # 用户节点按带宽降序排列
                         user_ids_ordered = sorted(

@@ -12,7 +12,6 @@ from analyze_bandwidth_llm_combined import (
 )
 from plot_userpattern_distance_cost import plot_cost_vs_distance_from_excel
 
-
 ALG_BW_LLM = ['no-split', '1-split', 'task-offloading', 'bottleneck-augment']
 ALG_USER = ['no-split', '1-split', 'task-offloading', 'bottleneck-augment']
 
@@ -150,12 +149,11 @@ def _plot_llm_view(df_all: pd.DataFrame) -> None:
                 if not data_by_algorithm:
                     continue
 
-                filename = os.path.join(llm_base_dir,
-                                        f"comp{int(comp)}.png")
+                filename = os.path.join(llm_base_dir, f"comp{int(comp)}.png")
                 title = f"{distribution} - LLM Computation={int(comp)}"
 
-                plot_dual_axis(x_values, data_by_algorithm, "Bandwidth",
-                               title, filename)
+                plot_dual_axis(x_values, data_by_algorithm, "Bandwidth", title,
+                               filename)
 
 
 def _plot_user_level_view(df_all: pd.DataFrame) -> None:
@@ -186,7 +184,7 @@ def _plot_user_level_view(df_all: pd.DataFrame) -> None:
             os.makedirs(user_level_dir, exist_ok=True)
 
             for (bandwidth, llm_comp), group in df_d.groupby(
-                    ["bandwidth", "llm_computation"]):
+                ["bandwidth", "llm_computation"]):
                 if group.empty:
                     continue
 
@@ -262,6 +260,10 @@ def plot_all_from_userpattern_all() -> None:
     # 距离指标视角复用已有实现
     plot_cost_vs_distance_from_excel()
 
+    # 分析回撤
+    import analyze_backtrack_cost
+    analyze_backtrack_cost.main()
+
 
 def main() -> None:
     plot_all_from_userpattern_all()
@@ -269,4 +271,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
