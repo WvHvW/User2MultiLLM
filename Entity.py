@@ -840,16 +840,16 @@ def _load_network_sparse(sheets_root, llm_ids=None):
         dst_is_llm = dst in llm_set
 
         if src_is_llm and dst_is_llm:
-            # 两端都是LLM：不应该有这种边，跳过或使用普通双向边
-            network.add_link(src, dst, capacity, distance)
+            # 两端都是LLM：不应该有这种边，跳过
+            continue
         elif dst_is_llm:
-            # dst是LLM：创建 src→dst 单向边（LLM作为终点）
-            network.add_one_way_link(src, dst, capacity, distance)
-            # 同时创建 dst→src 双向边的另一半（但LLM侧不能作为起点到达src）
-            # 实际上不需要创建反向物理边，因为LLM不应该作为起点
+            # dst是LLM：创建 src→dst 的正向边和反向残余边（允许流量回撤）
+            # 不创建 dst→src 的正向物理边（LLM不能作为起点）
+            network.add_directed_link(src, dst, capacity, distance)
         elif src_is_llm:
-            # src是LLM：创建 dst→src 单向边（LLM作为终点）
-            network.add_one_way_link(dst, src, capacity, distance)
+            # src是LLM：创建 dst→src 的正向边和反向残余边
+            # 不创建 src→dst 的正向物理边（LLM不能作为起点）
+            network.add_directed_link(dst, src, capacity, distance)
         else:
             # 普通边：双向
             network.add_link(src, dst, capacity, distance)
@@ -906,14 +906,16 @@ def _load_network_dense(sheets_root, llm_ids=None):
             dst_is_llm = dst in llm_set
 
             if src_is_llm and dst_is_llm:
-                # 两端都是LLM
-                network.add_link(src, dst, capacity, distance)
+                # 两端都是LLM：不应该有这种边，跳过
+                continue
             elif dst_is_llm:
-                # dst是LLM：创建 src→dst 单向边
-                network.add_one_way_link(src, dst, capacity, distance)
+                # dst是LLM：创建 src→dst 的正向边和反向残余边（允许流量回撤）
+                # 不创建 dst→src 的正向物理边（LLM不能作为起点）
+                network.add_directed_link(src, dst, capacity, distance)
             elif src_is_llm:
-                # src是LLM：创建 dst→src 单向边
-                network.add_one_way_link(dst, src, capacity, distance)
+                # src是LLM：创建 dst→src 的正向边和反向残余边
+                # 不创建 src→dst 的正向物理边（LLM不能作为起点）
+                network.add_directed_link(dst, src, capacity, distance)
             else:
                 # 普通边：双向
                 network.add_link(src, dst, capacity, distance)

@@ -17,9 +17,8 @@ from typing import Dict, List, Tuple, Any
 import Entity
 import Algorithm
 
-
 # 实验配置
-NETWORK_SIZES = [20, 40, 60, 80]  # 中等规模网络节点数
+NETWORK_SIZES = [20]  # 中等规模网络节点数
 NETWORK_BANDWIDTHS = [100, 200, 300, 400]  # 全网络带宽（Gbps）
 LLM_CAPACITIES_MEDIUM = [100, 150, 200]  # 中等规模LLM容量（Gbps）
 LLM_CAPACITIES_LARGE = [200, 250, 300]  # 大规模LLM容量（Gbps）
@@ -27,15 +26,42 @@ DISTRIBUTIONS = ['uniform', 'sparse', 'poisson', 'gaussian']  # 节点分布
 
 # 算法列表（需要user_ideal_llms的算法单独标记）
 ALGORITHMS = [
-    {'name': 'no-split', 'need_ideal': False},
-    {'name': 'no-split-aggregate', 'need_ideal': False},
-    {'name': 'bottleneck-split', 'need_ideal': False},
-    {'name': 'bottleneck-split-no-aggregate', 'need_ideal': True},
-    {'name': 'task-offloading', 'need_ideal': True},
-    {'name': 'task-offloading-aggregate', 'need_ideal': True},
-    {'name': 'bottleneck-split-augment', 'need_ideal': False},
-    {'name': '1-split', 'need_ideal': False},
-    {'name': '1-split-augment', 'need_ideal': False},
+    {
+        'name': 'no-split',
+        'need_ideal': False
+    },
+    {
+        'name': 'no-split-aggregate',
+        'need_ideal': False
+    },
+    {
+        'name': 'bottleneck-split',
+        'need_ideal': False
+    },
+    {
+        'name': 'bottleneck-split-no-aggregate',
+        'need_ideal': True
+    },
+    {
+        'name': 'task-offloading',
+        'need_ideal': True
+    },
+    {
+        'name': 'task-offloading-aggregate',
+        'need_ideal': True
+    },
+    {
+        'name': 'bottleneck-split-augment',
+        'need_ideal': False
+    },
+    {
+        'name': '1-split',
+        'need_ideal': False
+    },
+    {
+        'name': '1-split-augment',
+        'need_ideal': False
+    },
 ]
 
 
@@ -78,7 +104,9 @@ def calculate_key_link_utilization(network, top_n=20) -> float:
         return 0.0
 
     # 按介数中心性排序
-    sorted_edges = sorted(edge_betweenness.items(), key=lambda x: x[1], reverse=True)
+    sorted_edges = sorted(edge_betweenness.items(),
+                          key=lambda x: x[1],
+                          reverse=True)
 
     # 取前top_n条边
     top_edges = sorted_edges[:top_n]
@@ -98,7 +126,8 @@ def calculate_key_link_utilization(network, top_n=20) -> float:
         return 0.0
 
 
-def calculate_avg_distance_llm_to_user(network, users: Dict, llms: Dict) -> float:
+def calculate_avg_distance_llm_to_user(network, users: Dict,
+                                       llms: Dict) -> float:
     """
     计算LLM到user的平均距离（sigmoid归一化）
 
@@ -115,7 +144,9 @@ def calculate_avg_distance_llm_to_user(network, users: Dict, llms: Dict) -> floa
     for lid in llms.keys():
         for uid in users.keys():
             # 使用Dijkstra计算距离（忽略容量约束）
-            dist, _ = network.dijkstra_with_capacity(lid, float('inf'), target_id=uid)
+            dist, _ = network.dijkstra_with_capacity(lid,
+                                                     float('inf'),
+                                                     target_id=uid)
             if dist[uid] < float('inf'):
                 distances.append(dist[uid])
 
@@ -130,8 +161,12 @@ def calculate_avg_distance_llm_to_user(network, users: Dict, llms: Dict) -> floa
         return 0.0
 
 
-def load_network_data(network_size: int, user_dist: str, llm_dist: str,
-                     bandwidth: int, llm_capacity: int, sheets_root='sheets'):
+def load_network_data(network_size: int,
+                      user_dist: str,
+                      llm_dist: str,
+                      bandwidth: int,
+                      llm_capacity: int,
+                      sheets_root='sheets'):
     """
     加载网络数据
 
@@ -154,7 +189,8 @@ def load_network_data(network_size: int, user_dist: str, llm_dist: str,
     llms = Entity.load_llm_info(user_dist, llm_dist, sheets_root=network_dir)
 
     # 加载网络拓扑
-    json_obj = Entity.load_network_from_sheets(llm_ids=llms.keys(), sheets_root=network_dir)
+    json_obj = Entity.load_network_from_sheets(llm_ids=llms.keys(),
+                                               sheets_root=network_dir)
     network = json_obj['network']
 
     # 调整网络带宽和LLM容量
@@ -163,7 +199,7 @@ def load_network_data(network_size: int, user_dist: str, llm_dist: str,
         for link in links:
             if not link.is_reverse:
                 link.capacity = bandwidth
-                link.residual_capacity = bandwidth
+                link.flow = 0  # 重置流量，residual_capacity会自动计算
 
     # 2. 设置所有LLM服务容量为指定值
     for llm in llms.values():
@@ -174,13 +210,17 @@ def load_network_data(network_size: int, user_dist: str, llm_dist: str,
     for uid, user in users.items():
         distances, _ = network.dijkstra_ideal(uid, user.bw)
         sorted_llms = sorted(distances.items(), key=lambda x: x[1])
-        user_ideal_llms[uid] = {lid: dist for lid, dist in sorted_llms if lid in llms}
+        user_ideal_llms[uid] = {
+            lid: dist
+            for lid, dist in sorted_llms if lid in llms
+        }
 
     return network, users, llms, user_ideal_llms
 
 
-def run_single_experiment(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
-                         algorithm_name: str, need_ideal: bool) -> Dict[str, Any]:
+def run_single_experiment(network, users: Dict, llms: Dict,
+                          user_ideal_llms: Dict, algorithm_name: str,
+                          need_ideal: bool) -> Dict[str, Any]:
     """
     运行单次实验
 
@@ -211,10 +251,18 @@ def run_single_experiment(network, users: Dict, llms: Dict, user_ideal_llms: Dic
     # 运行算法（只运行一次）
     try:
         if need_ideal:
-            result = Algorithm.run_algorithm(algorithm_name, net_copy, users, llms,
-                                            user_ideal_llms=user_ideal_llms, is_shared=True)
+            result = Algorithm.run_algorithm(algorithm_name,
+                                             net_copy,
+                                             users,
+                                             llms,
+                                             user_ideal_llms=user_ideal_llms,
+                                             is_shared=True)
         else:
-            result = Algorithm.run_algorithm(algorithm_name, net_copy, users, llms, is_shared=True)
+            result = Algorithm.run_algorithm(algorithm_name,
+                                             net_copy,
+                                             users,
+                                             llms,
+                                             is_shared=True)
     except Exception as e:
         print(f"    算法 {algorithm_name} 运行失败: {e}")
         return None
@@ -247,7 +295,9 @@ def run_single_experiment(network, users: Dict, llms: Dict, user_ideal_llms: Dic
     }
 
 
-def run_experiments_for_network_size(network_size: int, sheets_root='sheets', results_root='results'):
+def run_experiments_for_network_size(network_size: int,
+                                     sheets_root='sheets',
+                                     results_root='results'):
     """
     运行指定网络规模的所有实验
 
@@ -280,21 +330,23 @@ def run_experiments_for_network_size(network_size: int, sheets_root='sheets', re
     withdraw_optimization_results = []
 
     # 多层循环
-    total_experiments = len(NETWORK_BANDWIDTHS) * len(llm_capacities) * len(DISTRIBUTIONS) * len(DISTRIBUTIONS) * len(ALGORITHMS)
+    total_experiments = len(NETWORK_BANDWIDTHS) * len(llm_capacities) * len(
+        DISTRIBUTIONS) * len(DISTRIBUTIONS) * len(ALGORITHMS)
     current_experiment = 0
 
     for bandwidth in NETWORK_BANDWIDTHS:
         for llm_capacity in llm_capacities:
             for user_dist in DISTRIBUTIONS:
                 for llm_dist in DISTRIBUTIONS:
-                    print(f"\n网络设置: 带宽={bandwidth}Gbps, LLM容量={llm_capacity}Gbps, "
-                          f"user分布={user_dist}, llm分布={llm_dist}")
+                    print(
+                        f"\n网络设置: 带宽={bandwidth}Gbps, LLM容量={llm_capacity}Gbps, "
+                        f"user分布={user_dist}, llm分布={llm_dist}")
 
                     # 加载网络数据
                     try:
                         network, users, llms, user_ideal_llms = load_network_data(
-                            network_size, user_dist, llm_dist, bandwidth, llm_capacity, sheets_root
-                        )
+                            network_size, user_dist, llm_dist, bandwidth,
+                            llm_capacity, sheets_root)
                     except Exception as e:
                         print(f"  加载网络数据失败: {e}")
                         continue
@@ -305,68 +357,101 @@ def run_experiments_for_network_size(network_size: int, sheets_root='sheets', re
                         algo_name = algo_config['name']
                         need_ideal = algo_config['need_ideal']
 
-                        print(f"  [{current_experiment}/{total_experiments}] 运行算法: {algo_name}")
+                        print(
+                            f"  [{current_experiment}/{total_experiments}] 运行算法: {algo_name}"
+                        )
 
                         # 运行实验
                         exp_result = run_single_experiment(
-                            network, users, llms, user_ideal_llms, algo_name, need_ideal
-                        )
+                            network, users, llms, user_ideal_llms, algo_name,
+                            need_ideal)
 
                         if exp_result is None:
                             continue
 
                         # 记录详细结果
                         detailed_results.append({
-                            '带宽设置': bandwidth,
-                            'LLM服务容量设置': llm_capacity,
-                            'user分布': user_dist,
-                            'llm分布': llm_dist,
-                            '算法名': algo_name,
-                            '运行时间': exp_result['runtime'],
-                            '总开销': exp_result['total_cost'],
-                            '服务率': exp_result['acceptance_ratio'],
-                            '关键链路利用率': exp_result['key_link_util'],
-                            '平均距离': exp_result['avg_distance']
+                            '带宽设置':
+                            bandwidth,
+                            'LLM服务容量设置':
+                            llm_capacity,
+                            'user分布':
+                            user_dist,
+                            'llm分布':
+                            llm_dist,
+                            '算法名':
+                            algo_name,
+                            '运行时间':
+                            exp_result['runtime'],
+                            '总开销':
+                            exp_result['total_cost'],
+                            '服务率':
+                            exp_result['acceptance_ratio'],
+                            '关键链路利用率':
+                            exp_result['key_link_util'],
+                            '平均距离':
+                            exp_result['avg_distance']
                         })
 
                         # 记录规模对比结果
                         size_comparison_results.append({
-                            'user_llm_dist': f"{user_dist}-{llm_dist}",
-                            '带宽设置': bandwidth,
-                            'LLM服务容量设置': llm_capacity,
-                            '网络节点个数': network_size,
-                            '算法名': algo_name,
-                            '运行时间': exp_result['runtime'],
-                            '总花销': exp_result['total_cost'],
-                            '服务率': exp_result['acceptance_ratio']
+                            'user_llm_dist':
+                            f"{user_dist}-{llm_dist}",
+                            '带宽设置':
+                            bandwidth,
+                            'LLM服务容量设置':
+                            llm_capacity,
+                            '网络节点个数':
+                            network_size,
+                            '算法名':
+                            algo_name,
+                            '运行时间':
+                            exp_result['runtime'],
+                            '总花销':
+                            exp_result['total_cost'],
+                            '服务率':
+                            exp_result['acceptance_ratio']
                         })
 
                         # 记录withdraw-optimization结果（只记录1-split和1-split-augment）
-                        if algo_name in ['1-split', '1-split-augment'] and exp_result['round_allocations'] is not None:
+                        if algo_name in [
+                                '1-split', '1-split-augment'
+                        ] and exp_result['round_allocations'] is not None:
                             for round_data in exp_result['round_allocations']:
                                 withdraw_optimization_results.append({
-                                    'user_llm_dist': f"{user_dist}-{llm_dist}",
-                                    '带宽设置': bandwidth,
-                                    'LLM服务容量设置': llm_capacity,
-                                    '算法名': algo_name,
-                                    '迭代次数': round_data['round'],
-                                    '截至当前轮次总花销': round_data['cumulative_cost']
+                                    'user_llm_dist':
+                                    f"{user_dist}-{llm_dist}",
+                                    '带宽设置':
+                                    bandwidth,
+                                    'LLM服务容量设置':
+                                    llm_capacity,
+                                    '算法名':
+                                    algo_name,
+                                    '迭代次数':
+                                    round_data['round'],
+                                    '截至当前轮次总花销':
+                                    round_data['cumulative_cost']
                                 })
 
     # 保存详细结果到N-xxx-results.xlsx
     detailed_df = pd.DataFrame(detailed_results)
-    detailed_excel_path = os.path.join(network_results_dir, f'N-{network_size}-results.xlsx')
+    detailed_excel_path = os.path.join(network_results_dir,
+                                       f'N-{network_size}-results.xlsx')
     detailed_df.to_excel(detailed_excel_path, index=False, engine='openpyxl')
     print(f"\n详细结果已保存到: {detailed_excel_path}")
 
     # 保存规模对比结果到N-size-results.xlsx
-    save_size_comparison_results(size_comparison_results, network_size, results_root)
+    save_size_comparison_results(size_comparison_results, network_size,
+                                 results_root)
 
     # 保存withdraw-optimization结果到withdraw-optimization.xlsx
-    save_withdraw_optimization_results(withdraw_optimization_results, network_size, results_root)
+    save_withdraw_optimization_results(withdraw_optimization_results,
+                                       network_size, results_root)
 
 
-def save_size_comparison_results(results: List[Dict], network_size: int, results_root='results'):
+def save_size_comparison_results(results: List[Dict],
+                                 network_size: int,
+                                 results_root='results'):
     """
     保存规模对比结果到N-size-results.xlsx
 
@@ -375,6 +460,10 @@ def save_size_comparison_results(results: List[Dict], network_size: int, results
         network_size: 网络节点数
         results_root: results根目录
     """
+    if not results:
+        print(f"规模对比结果为空，跳过保存 N-{network_size}-size-results.xlsx")
+        return
+
     # 按user_llm_dist分组
     grouped_results = {}
     for result in results:
@@ -383,8 +472,13 @@ def save_size_comparison_results(results: List[Dict], network_size: int, results
             grouped_results[user_llm_dist] = []
         grouped_results[user_llm_dist].append(result)
 
+    if not grouped_results:
+        print(f"规模对比结果分组为空，跳过保存 N-{network_size}-size-results.xlsx")
+        return
+
     # 保存到Excel（每个sheet对应一个user_llm_dist）
-    excel_path = os.path.join(results_root, f'N-{network_size}-size-results.xlsx')
+    excel_path = os.path.join(results_root,
+                              f'N-{network_size}-size-results.xlsx')
 
     with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
         for user_llm_dist, dist_results in grouped_results.items():
@@ -396,7 +490,9 @@ def save_size_comparison_results(results: List[Dict], network_size: int, results
     print(f"规模对比结果已保存到: {excel_path}")
 
 
-def save_withdraw_optimization_results(results: List[Dict], network_size: int, results_root='results'):
+def save_withdraw_optimization_results(results: List[Dict],
+                                       network_size: int,
+                                       results_root='results'):
     """
     保存withdraw-optimization结果到withdraw-optimization.xlsx
 
@@ -406,7 +502,7 @@ def save_withdraw_optimization_results(results: List[Dict], network_size: int, r
         results_root: results根目录
     """
     if not results:
-        print("无withdraw-optimization数据需要保存")
+        print(f"无withdraw-optimization数据需要保存")
         return
 
     # 按user_llm_dist分组
@@ -417,9 +513,14 @@ def save_withdraw_optimization_results(results: List[Dict], network_size: int, r
             grouped_results[user_llm_dist] = []
         grouped_results[user_llm_dist].append(result)
 
+    if not grouped_results:
+        print(f"withdraw-optimization数据分组为空，跳过保存")
+        return
+
     # 保存到Excel（每个sheet对应一个user_llm_dist）
     network_results_dir = os.path.join(results_root, f'N-{network_size}')
-    excel_path = os.path.join(network_results_dir, 'withdraw-optimization.xlsx')
+    excel_path = os.path.join(network_results_dir,
+                              'withdraw-optimization.xlsx')
 
     with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
         for user_llm_dist, dist_results in grouped_results.items():
@@ -445,7 +546,8 @@ def run_all_experiments(sheets_root='sheets', results_root='results'):
     # 对每个网络规模运行实验
     for network_size in NETWORK_SIZES:
         try:
-            run_experiments_for_network_size(network_size, sheets_root, results_root)
+            run_experiments_for_network_size(network_size, sheets_root,
+                                             results_root)
         except Exception as e:
             print(f"\n网络规模 N-{network_size} 实验失败: {e}")
             import traceback

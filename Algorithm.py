@@ -189,7 +189,7 @@ def no_split(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, Any]:
             if dist[lid] < best_cost:
                 best_cost = dist[lid]
                 best_llm = lid
-                best_path = net._reconstruct_path(prev, uid, lid)
+                best_path = net.get_path(prev, uid, lid)
 
         if best_path and best_llm is not None:
             path_links = []
@@ -295,7 +295,7 @@ def no_split_aggregate(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, 
             continue
 
         # 重建路径
-        path = net._reconstruct_path(prev, S, T)
+        path = net.get_path(prev, S, T)
         path_links = []
         bottleneck = float('inf')
 
@@ -412,7 +412,7 @@ def bottleneck_split(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, An
             break  # 无可行路径
 
         # 重建路径
-        path = net._reconstruct_path(prev, S, T)
+        path = net.get_path(prev, S, T)
         path_links = []
         bottleneck = float('inf')
 
@@ -514,7 +514,7 @@ def bottleneck_split_no_aggregate(network, users: Dict, llms: Dict, user_ideal_l
             dist, prev = net.dijkstra_with_capacity(uid, remaining, target_id=lid)
 
             if dist[lid] < float('inf'):
-                path = net._reconstruct_path(prev, uid, lid)
+                path = net.get_path(prev, uid, lid)
                 path_links = []
                 bottleneck = float('inf')
 
@@ -614,7 +614,7 @@ def task_offloading(network, users: Dict, llms: Dict, user_ideal_llms: Dict, **k
             dist, prev = net.dijkstra_with_capacity(uid, push_flow, target_id=lid)
 
             if dist[lid] < float('inf'):
-                path = net._reconstruct_path(prev, uid, lid)
+                path = net.get_path(prev, uid, lid)
                 path_links = []
                 bottleneck = float('inf')
 
@@ -722,7 +722,7 @@ def task_offloading_aggregate(network, users: Dict, llms: Dict, user_ideal_llms:
             break  # 无可行路径
 
         # 重建路径
-        path = net._reconstruct_path(prev, S, T)
+        path = net.get_path(prev, S, T)
         path_links = []
         bottleneck = float('inf')
 
@@ -858,7 +858,7 @@ def bottleneck_split_augment(network, users: Dict, llms: Dict, **kwargs) -> Dict
             break
 
         # 重建路径
-        path = net._reconstruct_path(prev, S, T)
+        path = net.get_path(prev, S, T)
         path_links = []
         bottleneck = float('inf')
 
@@ -981,7 +981,7 @@ def one_split(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, Any]:
             break
 
         # 重建路径
-        path = net._reconstruct_path(prev, S, T)
+        path = net.get_path(prev, S, T)
         path_links = []
         bottleneck = float('inf')
 
@@ -1108,7 +1108,7 @@ def one_split_augment(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, A
             break
 
         # 重建路径
-        path = net._reconstruct_path(prev, S, T)
+        path = net.get_path(prev, S, T)
         path_links = []
         bottleneck = float('inf')
 
