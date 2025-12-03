@@ -24,21 +24,16 @@ class Node:
 
 class User:
 
-    def __init__(self, id, bw, computation, storage):
+    def __init__(self, id, bw):
         self.id = id
         self.bw = bw
-        self.computation = computation
-        self.storage = storage
 
 
 class LLM:
 
-    def __init__(self, id, computation, storage):
+    def __init__(self, id, service_capacity):
         self.id = id
-        self.computation = computation
-        self.storage = storage
-        self.available_computation = computation
-        self.available_storage = storage
+        self.service_capacity = service_capacity
 
 
 class Link:
@@ -936,8 +931,7 @@ def load_llm_info(user_distribution='uniform',
     llms = {}
     for row in llm_df.itertuples(index=False):
         llm = LLM(id=int(row.node_id),
-                  computation=float(row.cpu_capacity),
-                  storage=float(row.mem_capacity))
+                  service_capacity=float(row.bw_capacity))
         llms[llm.id] = llm
     return llms
 
@@ -950,9 +944,7 @@ def load_user_info(distribution='uniform', sheets_root=sheets_dir):
     users = {}
     for row in user_df.itertuples(index=False):
         user = User(id=int(row.node_id),
-                    bw=float(row.bw_demand),
-                    computation=float(row.cpu_demand),
-                    storage=float(row.mem_demand))
+                    bw=float(row.bw_demand))
         users[user.id] = user
     return users
 

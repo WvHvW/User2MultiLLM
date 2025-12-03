@@ -13,33 +13,6 @@ import random
 import networkx as nx
 import numpy as np
 
-# ========== 实验配置 ==========
-# 网络规模：'medium'（中等规模）或 'large'（大规模）
-NETWORK_SCALE = 'medium'
-
-# 中等规模网络配置
-MEDIUM_CONFIG = {
-    'num_nodes_choices': [20, 40, 60, 80],
-    'target_degree_choices': [3, 4, 5],
-    'num_users': 8,
-    'num_llms': 4,
-    'user_bw_choices': [30, 40, 50],  # Gbps
-    'llm_capacity_choices': [100, 150, 200],  # Gbps
-}
-
-# 大规模网络配置
-LARGE_CONFIG = {
-    'num_nodes_choices': [100, 200, 300, 400],
-    'target_degree_choices': [5, 6, 7],
-    'num_users': 48,
-    'num_llms': 12,
-    'user_bw_choices': [30, 40, 50],  # Gbps
-    'llm_capacity_choices': [200, 250, 300],  # Gbps
-}
-
-# 根据NETWORK_SCALE选择配置
-CONFIG = MEDIUM_CONFIG if NETWORK_SCALE == 'medium' else LARGE_CONFIG
-
 
 def generate_city_network(num_nodes=20, target_degree=[3, 4, 5]):
     """
@@ -47,32 +20,12 @@ def generate_city_network(num_nodes=20, target_degree=[3, 4, 5]):
     - 在整数坐标系中随机生成指定数量的节点
     - 节点坐标范围为(0, 100) x (0, 100)
     - 通过理论计算与后备机制保证网络全联通
-    - target_degree支持两种模式：
-      1. 数值：将其视为期望的平均度
-      2. 列表：为每个节点从列表中随机选择目标度数（度数约束）
+    - 将 target_degree 视为期望的平均度
     """
 
     rng = np.random.default_rng()
     # 为了可视化和计算方便，仍在100x100的浮点坐标系中生成节点
     coords = {i: rng.uniform(0.0, 100.0, size=2) for i in range(num_nodes)}
-
-    # 判断target_degree是列表还是数值
-    if isinstance(target_degree, (list, tuple)):
-        # 度数约束模式：为每个节点随机分配目标度数
-        use_degree_constraints = True
-        node_target_degrees = {
-            i: random.choice(target_degree)
-            for i in range(num_nodes)
-        }
-        desired_avg = sum(node_target_degrees.values()) / num_nodes
-        min_degree = min(target_degree)
-        max_degree = max(target_degree)
-    else:
-        # 平均度数模式（向后兼容）
-        use_degree_constraints = False
-        desired_avg = max(target_degree, 1.0)
-        min_degree = 3
-        max_degree = None
 
     # --- 关键优化点 1: 基于理论计算连接半径 ---
     area = 100.0 * 100.0
@@ -80,7 +33,7 @@ def generate_city_network(num_nodes=20, target_degree=[3, 4, 5]):
     connecting_radius = math.sqrt(area * math.log(num_nodes) /
                                   (math.pi * num_nodes))
     # 考虑目标度的半径
-    target_radius = math.sqrt(desired_avg * area / (math.pi * num_nodes))
+    target_radius = math.sqrt(target_degree * area / (math.pi * num_nodes))
     # 取两者中的较大值，并增加一个小的安全系数（例如1.1）以提高成功率
     radius = max(connecting_radius, target_radius) * 1.1
 
@@ -113,7 +66,9 @@ def generate_city_network(num_nodes=20, target_degree=[3, 4, 5]):
     def _average_degree() -> float:
         return 2.0 * G.number_of_edges() / num_nodes if num_nodes else 0.0
 
+    desired_avg = max(target_degree, 1.0)
     tolerance = 0.5
+    min_degree = 3
 
     def _ensure_minimum_degree():
         """为所有节点补边以满足最小度约束。"""
@@ -132,11 +87,6 @@ def generate_city_network(num_nodes=20, target_degree=[3, 4, 5]):
                     continue
                 if G.has_edge(u, v):
                     continue
-                # 度数约束模式下，检查另一端节点是否超过最大度数
-                if use_degree_constraints and max_degree is not None:
-                    other = v if u == node else u
-                    if G.degree[other] >= max_degree:
-                        continue
                 G.add_edge(u, v)
                 changed = True
                 added = True
@@ -148,110 +98,39 @@ def generate_city_network(num_nodes=20, target_degree=[3, 4, 5]):
 
     _ensure_minimum_degree()
 
-    if use_degree_constraints:
-        # 度数约束模式：调整每个节点的度数到目标范围
-        max_iterations = num_nodes * 10
-        for iteration in range(max_iterations):
-            # 找到度数低于目标的节点
-            nodes_need_more = [
-                node for node in G.nodes()
-                if G.degree[node] < node_target_degrees[node]
-            ]
-            # 找到度数高于目标的节点
-            nodes_have_extra = [
-                node for node in G.nodes()
-                if G.degree[node] > node_target_degrees[node]
-            ]
-
-            if not nodes_need_more and not nodes_have_extra:
+    # 若平均度偏低，按距离从短到长补边
+    if _average_degree() < desired_avg - tolerance:
+        for _, u, v in all_edge_candidates:
+            if G.has_edge(u, v):
+                continue
+            G.add_edge(u, v)
+            if _average_degree() >= desired_avg - tolerance:
                 break
 
-            # 优先添加边（对于度数不足的节点）
-            if nodes_need_more:
-                node_u = nodes_need_more[0]
-                added = False
-                for dist, u, v in all_edge_candidates:
-                    if node_u not in (u, v):
-                        continue
-                    if G.has_edge(u, v):
-                        continue
-                    other = v if u == node_u else u
-                    # 确保另一端节点不超过最大度数
-                    if G.degree[other] >= node_target_degrees[other]:
-                        continue
-                    G.add_edge(u, v)
-                    added = True
-                    break
-                if added:
-                    continue
+    # 若平均度偏高，按距离从长到短删边，但保持连通
+    if _average_degree() > desired_avg + tolerance:
+        removal_candidates = [(float(np.linalg.norm(coords[u] - coords[v])), u,
+                               v) for u, v in G.edges()]
+        removal_candidates.sort(key=lambda x: x[0], reverse=True)
 
-            # 删除边（对于度数过高的节点）
-            if nodes_have_extra:
-                node_u = nodes_have_extra[0]
-                # 找到可以删除的边（不破坏连通性，不让节点度数低于目标）
-                edges_to_try = [(u, v) for u, v in G.edges()
-                                if node_u in (u, v)]
-                edges_to_try.sort(
-                    key=lambda e: np.linalg.norm(coords[e[0]] - coords[e[1]]),
-                    reverse=True)
-                for u, v in edges_to_try:
-                    if G.degree[u] <= node_target_degrees[u] or G.degree[
-                            v] <= node_target_degrees[v]:
-                        continue
-                    G.remove_edge(u, v)
-                    if not nx.is_connected(G):
-                        G.add_edge(u, v)
-                    else:
-                        break
-
-        # 最终确保所有节点满足最小度数
-        _ensure_minimum_degree()
-
-    else:
-        # 平均度数模式（原有逻辑）
-        # 若平均度偏低，按距离从短到长补边
-        if _average_degree() < desired_avg - tolerance:
-            for _, u, v in all_edge_candidates:
-                if G.has_edge(u, v):
-                    continue
+        for _, u, v in removal_candidates:
+            if _average_degree() <= desired_avg + tolerance:
+                break
+            if not G.has_edge(u, v):
+                continue
+            if G.degree[u] <= min_degree or G.degree[v] <= min_degree:
+                continue
+            G.remove_edge(u, v)
+            if not nx.is_connected(G):
                 G.add_edge(u, v)
-                if _average_degree() >= desired_avg - tolerance:
-                    break
 
-        # 若平均度偏高，按距离从长到短删边，但保持连通
-        if _average_degree() > desired_avg + tolerance:
-            removal_candidates = [
-                (float(np.linalg.norm(coords[u] - coords[v])), u, v)
-                for u, v in G.edges()
-            ]
-            removal_candidates.sort(key=lambda x: x[0], reverse=True)
-
-            for _, u, v in removal_candidates:
-                if _average_degree() <= desired_avg + tolerance:
-                    break
-                if not G.has_edge(u, v):
-                    continue
-                if G.degree[u] <= min_degree or G.degree[v] <= min_degree:
-                    continue
-                G.remove_edge(u, v)
-                if not nx.is_connected(G):
-                    G.add_edge(u, v)
-
-        _ensure_minimum_degree()
+    _ensure_minimum_degree()
 
     final_avg = _average_degree()
-    if use_degree_constraints:
-        # 打印度数分布统计
-        degree_dist = {}
-        for node in G.nodes():
-            deg = G.degree[node]
-            degree_dist[deg] = degree_dist.get(deg, 0) + 1
-        print(f"[度数约束模式] 平均度: {final_avg:.2f}, 度数分布: {degree_dist}")
-    else:
-        if final_avg < desired_avg - 2 * tolerance or final_avg > desired_avg + 2 * tolerance:
-            print(
-                f"[WARN] 平均度 {final_avg:.2f} 与目标 {desired_avg:.2f} 差距较大，可调整 target_degree、节点数量或随机种子"
-            )
+    if final_avg < desired_avg - 2 * tolerance or final_avg > desired_avg + 2 * tolerance:
+        print(
+            f"[WARN] 平均度 {final_avg:.2f} 与目标 {desired_avg:.2f} 差距较大，可调整 target_degree、节点数量或随机种子"
+        )
 
     # 为边添加权重和容量属性
     for u, v in G.edges():
@@ -378,15 +257,18 @@ def assign_user_nodes_by_distribution(G, distribution_type='uniform'):
     # 重置所有节点的用户相关属性
     for n in all_nodes:
         # 清除可能存在的用户属性
-        for attr in ['bw_demand']:
+        for attr in ['num_users', 'cpu_demand', 'mem_demand', 'bw_demand']:
             if attr in G.nodes[n]:
                 del G.nodes[n][attr]
 
-    # 定义用户节点的配置（根据网络规模动态配置）
+    # 定义用户节点的配置
     user_choices = [{
-        'num': CONFIG['num_users'],
-        'bw_demand': random.choice(CONFIG['user_bw_choices'])
-    } for _ in range(1)]  # 所有用户使用相同的随机带宽需求
+        'num': 6,
+        'num_users': 100,
+        'cpu_demand': 4,
+        'mem_demand': 8,
+        'bw_demand': 10
+    }]
 
     # 计算总的用户节点数量
     total_user_nodes = sum(choice['num'] for choice in user_choices)
@@ -481,9 +363,11 @@ def assign_user_nodes_by_distribution(G, distribution_type='uniform'):
         for idx in selected_indices:
             node_id = all_nodes[idx]
             user_nodes.append(node_id)
-            # 为每个用户随机分配带宽需求
-            G.nodes[node_id]['bw_demand'] = random.choice(
-                CONFIG['user_bw_choices'])
+            # 设置用户相关属性
+            G.nodes[node_id]['num_users'] = choice['num_users']
+            G.nodes[node_id]['cpu_demand'] = choice['cpu_demand']
+            G.nodes[node_id]['mem_demand'] = choice['mem_demand']
+            G.nodes[node_id]['bw_demand'] = choice['bw_demand']
     return G, user_nodes
 
 
@@ -507,15 +391,12 @@ def assign_llm_nodes_by_distribution(G,
         # 只有非用户节点才能被分配为LLM候选节点
         if user_nodes is None or n not in user_nodes:
             # 清除可能存在的LLM属性
-            for attr in ['bw_capacity']:
+            for attr in ['mem_capacity', 'cpu_capacity']:
                 if attr in G.nodes[n]:
                     del G.nodes[n][attr]
 
-    # 定义LLM候选节点的配置（根据网络规模动态配置）
-    llm_choices = [{
-        'num': CONFIG['num_llms'],
-        'bw_capacity': random.choice(CONFIG['llm_capacity_choices'])
-    } for _ in range(1)]  # 所有LLM使用相同的随机容量
+    # 定义LLM候选节点的配置
+    llm_choices = [{'num': 3, 'cpu_capacity': 10, 'mem_capacity': 16}]
 
     # 计算总的LLM节点数量
     total_llm_nodes = sum(choice['num'] for choice in llm_choices)
@@ -616,9 +497,9 @@ def assign_llm_nodes_by_distribution(G,
         for idx in selected_indices:
             node_id = available_nodes[idx]
             llm_nodes.append(node_id)
-            # 为每个LLM随机分配服务容量
-            G.nodes[node_id]['bw_capacity'] = random.choice(
-                CONFIG['llm_capacity_choices'])
+            # 设置LLM相关属性
+            G.nodes[node_id]['cpu_capacity'] = choice['cpu_capacity']
+            G.nodes[node_id]['mem_capacity'] = choice['mem_capacity']
             G.nodes[node_id]['deployed'] = 0
     return G, llm_nodes
 
@@ -636,17 +517,9 @@ if USE_CUSTOM_NETWORK:
     Graph, common_nodes = create_custom_network()
 else:
     print("=" * 50)
-    print(f"使用随机生成网络 - {NETWORK_SCALE.upper()}规模")
+    print("使用随机生成网络")
     print("=" * 50)
-    # 从配置中选择第一个节点数和度数范围
-    default_num_nodes = CONFIG['num_nodes_choices'][0]
-    degree_constraints = CONFIG['target_degree_choices']
-    print(f"节点数: {default_num_nodes}, 度数约束: {degree_constraints}")
-    print(f"User数: {CONFIG['num_users']}, LLM数: {CONFIG['num_llms']}")
-    Graph, common_nodes = generate_city_network(
-        num_nodes=default_num_nodes,
-        target_degree=degree_constraints  # 直接传递度数列表
-    )
+    Graph, common_nodes = generate_city_network(num_nodes=20, target_degree=4)
 
 # 根据不同分布类型分配节点并保存结果
 distribution_types = ['uniform', 'sparse', 'poisson', 'gaussian']
@@ -659,7 +532,13 @@ for user_dist in distribution_types:
     user_info = []
     for node_id in current_user_nodes:
         node_data = G.nodes[node_id]
-        info = {'node_id': node_id, 'bw_demand': node_data.get('bw_demand', 0)}
+        info = {
+            'node_id': node_id,
+            'num_users': node_data.get('num_users', 0),
+            'cpu_demand': node_data.get('cpu_demand', 0),
+            'mem_demand': node_data.get('mem_demand', 0),
+            'bw_demand': node_data.get('bw_demand', 0)
+        }
         user_info.append(info)
     user_data[user_dist] = user_info
     for llm_dist in distribution_types:
@@ -671,7 +550,8 @@ for user_dist in distribution_types:
             node_data = G_llm.nodes[node_id]
             info = {
                 'node_id': node_id,
-                'bw_capacity': node_data.get('bw_capacity', 0),
+                'cpu_capacity': node_data.get('cpu_capacity', 0),
+                'mem_capacity': node_data.get('mem_capacity', 0),
             }
             llm_info.append(info)
         llm_data[user_dist][llm_dist] = llm_info
