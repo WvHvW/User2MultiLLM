@@ -92,8 +92,8 @@
 2. 每个网络设置下得到的结果保存在results/N-xxx目录下
 3. 大循环是两层，第一层是全网络带宽设为[100, 200, 300, 400]Gbps，第二层是所有LLM服务容量设为[100, 150, 200]Gbps。即要研究统一带宽时LLM服务容量变化带来的影响和统一LLM服务容量时带宽变化带来的影响
 4. 网络设置下又是两层循环，第一层是user分布，第二层是llm分布
-5. 每一套网络设置下，依次调用对比算法，记录字段包括：运行时间、总开销、服务率、前20条关键链路（根据介数中心性排列）的平均利用率，llm到user的平均距离（所有llm到所有user的距离加和后用sigmoid归一化）
+5. 每一套网络设置下，依次调用对比算法，记录字段包括：运行时间、总开销、优化率、服务率、前20条关键链路（根据介数中心性排列）的平均利用率，llm到user的平均距离（所有llm到所有user的距离加和后用sigmoid归一化）
 6. 记录的文件包括
    1. “N-xxx-results.xlsx”，第一列是带宽设置，第二列是LLM服务容量设置，第三列是user分布，第四列是llm分布，第五列是算法名，往后是各个记录字段。这个文件保存在results/N-xxx目录下
    2. “N-size-results.xlsx”，sheet名为对应的user_distribution-llm_distribution，第一列是带宽设置，第二列是LLM服务容量设置，第三列是网络节点个数，第四列是算法名，第五列是运行时间，第六列是总花销，第七列是服务率。这个文件保存在results目录下即可
-   3. 只记录1-split和1-split-augment的结果，名为“withdraw-optimization.xlsx”，sheet名为对应的user_distribution-llm_distribution，第一列是带宽设置，第二列是LLM服务容量设置，第三列是算法名，第四列是迭代次数，第五列是截至当前轮次总花销。这个文件保存在results/N-xxx目录下
+   3. 只记录1-split和1-split-augment的结果，名为“withdraw-optimization.xlsx”，sheet名为对应的user_distribution-llm_distribution，第一列是带宽设置，第二列是LLM服务容量设置，第三列是1-split算法名，第四列是1-split-augment算法名，第五列是迭代次数，第六列是截至当前轮次总花销。这个文件保存在results/N-xxx目录下

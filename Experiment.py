@@ -19,19 +19,23 @@ import Algorithm
 
 # 实验配置
 NETWORK_SIZES = [20]  # 中等规模网络节点数
-NETWORK_BANDWIDTHS = [100, 200, 300, 400]  # 全网络带宽（Gbps）
+NETWORK_BANDWIDTHS = [50, 80, 100, 150, 200]  # 全网络带宽（Gbps）
 LLM_CAPACITIES_MEDIUM = [100, 150, 200]  # 中等规模LLM容量（Gbps）
 LLM_CAPACITIES_LARGE = [200, 250, 300]  # 大规模LLM容量（Gbps）
-DISTRIBUTIONS = ['uniform']  # 节点分布
+DISTRIBUTIONS = ['uniform', 'sparse', 'poisson', 'gaussian']  # 节点分布
 
 # 算法列表（需要user_ideal_llms的算法单独标记）
 ALGORITHMS = [
+    {
+        'name': 'no-split-aggregate',
+        'need_ideal': False
+    },
     {
         'name': 'no-split',
         'need_ideal': False
     },
     {
-        'name': 'no-split-aggregate',
+        'name': '1-split',
         'need_ideal': False
     },
     {
@@ -43,23 +47,19 @@ ALGORITHMS = [
         'need_ideal': True
     },
     {
-        'name': 'LLM-split',
-        'need_ideal': True
-    },
-    {
         'name': 'LLM-split-aggregate',
         'need_ideal': True
     },
     {
-        'name': 'bottleneck-split-augment',
-        'need_ideal': False
-    },
-    {
-        'name': '1-split',
-        'need_ideal': False
+        'name': 'LLM-split',
+        'need_ideal': True
     },
     {
         'name': '1-split-augment',
+        'need_ideal': False
+    },
+    {
+        'name': 'bottleneck-split-augment',
         'need_ideal': False
     },
 ]
@@ -368,7 +368,7 @@ def run_experiments_for_network_size(network_size: int,
                         if exp_result is None:
                             continue
 
-                        # 记录详细结果
+                        # 记录详细结果（优化率后续在保存前统一补充）
                         detailed_results.append({
                             '带宽设置':
                             bandwidth,
@@ -434,8 +434,32 @@ def run_experiments_for_network_size(network_size: int,
                                     round_data['cumulative_cost']
                                 })
 
-    # 保存详细结果到N-xxx-results.xlsx
+    # 保存详细结果到N-xxx-results.xlsx，增加“优化率”字段
     detailed_df = pd.DataFrame(detailed_results)
+
+    if not detailed_df.empty:
+        # 以同一网络配置（带宽、LLM容量、user分布、llm分布）分组
+        group_cols = ['带宽设置', 'LLM服务容量设置', 'user分布', 'llm分布']
+
+        def compute_optimization_rate(group: pd.DataFrame) -> pd.DataFrame:
+            # 在该网络配置下找到1-split-augment的总开销作为基准
+            mask_baseline = group['算法名'] == '1-split-augment'
+            if not mask_baseline.any():
+                group['优化率'] = np.nan
+                return group
+
+            baseline_cost = group.loc[mask_baseline, '总开销'].iloc[0]
+            if baseline_cost == 0:
+                group['优化率'] = np.nan
+                return group
+
+            group['优化率'] = (group['总开销'] - baseline_cost) / baseline_cost
+            return group
+
+        detailed_df = detailed_df.groupby(
+            group_cols, as_index=False,
+            group_keys=False).apply(compute_optimization_rate)
+
     detailed_excel_path = os.path.join(network_results_dir,
                                        f'N-{network_size}-results.xlsx')
     detailed_df.to_excel(detailed_excel_path, index=False, engine='openpyxl')
