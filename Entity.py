@@ -932,8 +932,7 @@ def load_llm_info(user_distribution='uniform',
     llm_df = _load_excel(llm_path, sheet_name=llm_distribution)
     llms = {}
     for row in llm_df.itertuples(index=False):
-        llm = LLM(id=int(row.node_id),
-                  service_capacity=float(row.bw_capacity))
+        llm = LLM(id=int(row.node_id), service_capacity=float(row.bw_capacity))
         llms[llm.id] = llm
     return llms
 
@@ -945,8 +944,7 @@ def load_user_info(distribution='uniform', sheets_root=sheets_dir):
     user_df = _load_excel(user_path, sheet_name='user')
     users = {}
     for row in user_df.itertuples(index=False):
-        user = User(id=int(row.node_id),
-                    bw=float(row.bw_demand))
+        user = User(id=int(row.node_id), bw=float(row.bw_demand))
         users[user.id] = user
     return users
 

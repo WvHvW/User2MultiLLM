@@ -20,22 +20,11 @@ from typing import Dict, List, Tuple, Any
 from collections import deque
 
 
-def _trace_user_flow_bfs(net, user_id, users: Dict, llms: Dict, S, T) -> List[Tuple]:
+def _trace_user_flow_bfs(net, user_id, users: Dict, llms: Dict, S,
+                         T) -> List[Tuple]:
     """
-    使用BFS追踪用户流量的最终分配情况
-
+    使用迭代式DFS追踪用户流量的最终分配情况
     从用户节点开始，遍历所有有流量的正向边，找到所有流向LLM的路径和流量。
-
-    Args:
-        net: 网络对象（增广完成后的最终状态）
-        user_id: 用户ID
-        users: 用户字典
-        llms: LLM字典
-        S: 超级源点ID
-        T: 超级汇点ID
-
-    Returns:
-        [(user_id, llm_id, path, flow, cost), ...]
     """
     allocations = []
 
@@ -43,78 +32,10 @@ def _trace_user_flow_bfs(net, user_id, users: Dict, llms: Dict, S, T) -> List[Tu
     if user_id not in users:
         return allocations
 
-    # 使用BFS找到所有从user到LLM的有流量路径
-    # 我们需要找到所有的流量分配，可能有多条路径到不同LLM
-
-    # 为了准确重建流量分配，我们使用DFS遍历所有可能的流量路径
-    # 每找到一条完整路径（user -> ... -> LLM），记录该路径上的最小流量
-
-    def dfs_find_paths(current, target_llms, path, visited_edges):
-        """DFS找到从current到任意LLM的所有路径"""
-        nonlocal allocations
-
-        # 如果当前节点是LLM
-        if current in target_llms:
-            # 找到一条路径，计算该路径的流量和成本
-            if len(path) >= 1:  # 至少有一条边
-                # 计算路径上的最小流量
-                min_flow = float('inf')
-                for link in path:
-                    min_flow = min(min_flow, link.flow)
-
-                if min_flow > 1e-9:
-                    # 计算路径成本（排除S->user和LLM->T的边）
-                    path_nodes = [user_id]
-                    path_cost = 0.0
-                    for link in path:
-                        if link.src != S and link.dst != T:
-                            path_cost += link.flow * link.distance
-                        path_nodes.append(link.dst)
-
-                    # 去掉路径末尾的T节点（如果有）
-                    if path_nodes[-1] == T:
-                        path_nodes = path_nodes[:-1]
-
-                    # 记录分配
-                    allocations.append((user_id, current, path_nodes, min_flow, path_cost))
-
-                    # 减少路径上的流量（虚拟减少，用于避免重复计数）
-                    for link in path:
-                        link.flow -= min_flow
-
-            return
-
-        # 继续DFS
-        if current not in net.links:
-            return
-
-        for link in net.links[current]:
-            # 只考虑正向边且有流量的边
-            if link.is_reverse or link.flow < 1e-9:
-                continue
-
-            # 避免重复访问同一条边
-            edge_id = (link.src, link.dst, id(link))
-            if edge_id in visited_edges:
-                continue
-
-            # 跳过到S的边
-            if link.dst == S:
-                continue
-
-            # 添加边到路径
-            visited_edges.add(edge_id)
-            path.append(link)
-
-            # 递归DFS
-            dfs_find_paths(link.dst, target_llms, path, visited_edges)
-
-            # 回溯
-            path.pop()
-            visited_edges.remove(edge_id)
-
     # 创建网络的深拷贝，避免修改原网络
     net_copy = copy.deepcopy(net)
+
+    target_llms = set(llms.keys())
 
     # 多次DFS，直到没有更多流量
     max_iterations = 1000  # 防止无限循环
@@ -130,8 +51,71 @@ def _trace_user_flow_bfs(net, user_id, users: Dict, llms: Dict, S, T) -> List[Tu
         if not has_flow:
             break
 
-        # 执行一次DFS找到一条路径
-        dfs_find_paths(user_id, llms.keys(), [], set())
+        # 使用迭代式DFS找到一条路径（避免递归栈溢出）
+        # 栈中每个元素：(当前节点, 路径边列表, 已访问边集合)
+        stack = [(user_id, [], set())]
+        found_path = False
+
+        while stack and not found_path:
+            current, path, visited_edges = stack.pop()
+
+            # 如果当前节点是LLM，找到一条路径
+            if current in target_llms:
+                if len(path) >= 1:
+                    # 计算路径上的最小流量
+                    min_flow = min(link.flow for link in path)
+
+                    if min_flow > 1e-9:
+                        # 计算路径成本（排除S->user和LLM->T的边）
+                        path_nodes = [user_id]
+                        path_distance = 0.0
+                        for link in path:
+                            if link.src != S and link.dst != T:
+                                path_distance += link.distance
+                            path_nodes.append(link.dst)
+
+                        # 去掉路径末尾的T节点（如果有）
+                        if path_nodes[-1] == T:
+                            path_nodes = path_nodes[:-1]
+
+                        # 总成本 = 单位距离 × 流量
+                        path_cost = path_distance * min_flow
+
+                        # 记录分配
+                        allocations.append((user_id, current, path_nodes,
+                                            min_flow, path_cost))
+
+                        # 减少路径上的流量（避免重复计数）
+                        for link in path:
+                            link.flow -= min_flow
+
+                        found_path = True
+                continue
+
+            # 继续DFS：遍历当前节点的所有出边
+            if current not in net_copy.links:
+                continue
+
+            for link in net_copy.links[current]:
+                # 只考虑正向边且有流量的边
+                if link.is_reverse or link.flow < 1e-9:
+                    continue
+
+                # 避免重复访问同一条边
+                edge_id = (link.src, link.dst, id(link))
+                if edge_id in visited_edges:
+                    continue
+
+                # 跳过到S的边
+                if link.dst == S:
+                    continue
+
+                # 创建新的路径和访问集合（避免共享状态）
+                new_path = path + [link]
+                new_visited = visited_edges | {edge_id}
+
+                # 压入栈（后进先出，实现DFS）
+                stack.append((link.dst, new_path, new_visited))
 
     return allocations
 
@@ -217,11 +201,13 @@ def no_split(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, Any]:
         'total_cost': total_cost,
         'total_flow': total_demand,
         'served_flow': served_flow,
-        'acceptance_ratio': acceptance_ratio
+        'acceptance_ratio': acceptance_ratio,
+        'network': net
     }
 
 
-def no_split_aggregate(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, Any]:
+def no_split_aggregate(network, users: Dict, llms: Dict,
+                       **kwargs) -> Dict[str, Any]:
     """
     不分流算法（带汇集图）
 
@@ -338,10 +324,10 @@ def no_split_aggregate(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, 
         # 记录分配（去掉S和T节点）
         path_without_ST = path[1:-1]
         # 计算成本（排除S->user和LLM->T边）
-        path_cost = sum(
-            link.distance for link in path_links[1:-1]
-        ) * user_demand
-        allocations.append((actual_user, actual_llm, path_without_ST, user_demand, path_cost))
+        path_cost = sum(link.distance
+                        for link in path_links[1:-1]) * user_demand
+        allocations.append(
+            (actual_user, actual_llm, path_without_ST, user_demand, path_cost))
         total_cost += path_cost
         served_flow += user_demand
 
@@ -352,11 +338,13 @@ def no_split_aggregate(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, 
         'total_cost': total_cost,
         'total_flow': total_demand,
         'served_flow': served_flow,
-        'acceptance_ratio': acceptance_ratio
+        'acceptance_ratio': acceptance_ratio,
+        'network': net
     }
 
 
-def bottleneck_split(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, Any]:
+def bottleneck_split(network, users: Dict, llms: Dict,
+                     **kwargs) -> Dict[str, Any]:
     """
     瓶颈分流算法（带汇集图）
 
@@ -405,8 +393,8 @@ def bottleneck_split(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, An
 
     # 循环增广，直到无可行路径
     while True:
-        # 寻找S->T的最短路径（任意流量）
-        dist, prev = net.dijkstra_with_capacity(S, float('inf'), target_id=T)
+        # 寻找S->T的最短路径（min_capacity=1e-9 排除饱和边）
+        dist, prev = net.dijkstra_with_capacity(S, 1e-9, target_id=T)
 
         if dist[T] >= float('inf'):
             break  # 无可行路径
@@ -439,10 +427,10 @@ def bottleneck_split(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, An
                 # 记录分配（去掉S和T节点）
                 path_without_ST = path[1:-1]
                 # 计算成本（排除S->user和LLM->T边）
-                path_cost = sum(
-                    link.distance for link in path_links[1:-1]
-                ) * bottleneck
-                allocations.append((actual_user, actual_llm, path_without_ST, bottleneck, path_cost))
+                path_cost = sum(link.distance
+                                for link in path_links[1:-1]) * bottleneck
+                allocations.append((actual_user, actual_llm, path_without_ST,
+                                    bottleneck, path_cost))
                 total_cost += path_cost
                 served_flow += bottleneck
 
@@ -453,11 +441,14 @@ def bottleneck_split(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, An
         'total_cost': total_cost,
         'total_flow': total_demand,
         'served_flow': served_flow,
-        'acceptance_ratio': acceptance_ratio
+        'acceptance_ratio': acceptance_ratio,
+        'network': net
     }
 
 
-def bottleneck_split_no_aggregate(network, users: Dict, llms: Dict, user_ideal_llms: Dict, **kwargs) -> Dict[str, Any]:
+def bottleneck_split_no_aggregate(network, users: Dict, llms: Dict,
+                                  user_ideal_llms: Dict,
+                                  **kwargs) -> Dict[str, Any]:
     """
     瓶颈分流算法（不带汇集图）
 
@@ -511,7 +502,9 @@ def bottleneck_split_no_aggregate(network, users: Dict, llms: Dict, user_ideal_l
                 continue
 
             # 使用Dijkstra找路径
-            dist, prev = net.dijkstra_with_capacity(uid, remaining, target_id=lid)
+            dist, prev = net.dijkstra_with_capacity(uid,
+                                                    remaining,
+                                                    target_id=lid)
 
             if dist[lid] < float('inf'):
                 path = net.get_path(prev, uid, lid)
@@ -523,12 +516,14 @@ def bottleneck_split_no_aggregate(network, users: Dict, llms: Dict, user_ideal_l
                     for link in net.links.get(src, []):
                         if link.dst == dst and not link.is_reverse:
                             path_links.append(link)
-                            bottleneck = min(bottleneck, link.residual_capacity)
+                            bottleneck = min(bottleneck,
+                                             link.residual_capacity)
                             break
 
                 # 考虑LLM容量限制
                 if is_shared:
-                    bottleneck = min(bottleneck, llms_copy[lid].service_capacity)
+                    bottleneck = min(bottleneck,
+                                     llms_copy[lid].service_capacity)
 
                 # 推送瓶颈流量
                 push_flow = min(bottleneck, remaining)
@@ -539,7 +534,8 @@ def bottleneck_split_no_aggregate(network, users: Dict, llms: Dict, user_ideal_l
                     if is_shared:
                         llms_copy[lid].service_capacity -= push_flow
 
-                    path_cost = sum(link.distance for link in path_links) * push_flow
+                    path_cost = sum(link.distance
+                                    for link in path_links) * push_flow
                     allocations.append((uid, lid, path, push_flow, path_cost))
                     total_cost += path_cost
                     served_flow += push_flow
@@ -552,28 +548,15 @@ def bottleneck_split_no_aggregate(network, users: Dict, llms: Dict, user_ideal_l
         'total_cost': total_cost,
         'total_flow': total_demand,
         'served_flow': served_flow,
-        'acceptance_ratio': acceptance_ratio
+        'acceptance_ratio': acceptance_ratio,
+        'network': net
     }
 
 
-def task_offloading(network, users: Dict, llms: Dict, user_ideal_llms: Dict, **kwargs) -> Dict[str, Any]:
+def LLM_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
+              **kwargs) -> Dict[str, Any]:
     """
-    任务卸载算法
-
-    策略：
-    - 分流粒度为user_ideal_llm里最靠前的llm剩余容量
-    - 用户分配顺序按默认索引顺序
-
-    Args:
-        network: Network对象
-        users: {user_id: User对象} 字典
-        llms: {llm_id: LLM对象} 字典
-        user_ideal_llms: {user_id: {llm_id: cost, ...}} 字典
-        **kwargs:
-            - is_shared: bool, LLM容量是否共享（默认True）
-
-    Returns:
-        同no_split
+    LLM分流算法
     """
     is_shared = kwargs.get('is_shared', True)
 
@@ -585,10 +568,7 @@ def task_offloading(network, users: Dict, llms: Dict, user_ideal_llms: Dict, **k
     total_demand = sum(u.bw for u in users.values())
     served_flow = 0.0
 
-    # 按索引顺序处理用户
-    sorted_users = sorted(users.items(), key=lambda x: x[0])
-
-    for uid, user in sorted_users:
+    for uid, user in users.items():
         remaining = user.bw
 
         if uid not in user_ideal_llms:
@@ -604,14 +584,17 @@ def task_offloading(network, users: Dict, llms: Dict, user_ideal_llms: Dict, **k
             if lid not in llms_copy:
                 continue
 
-            llm_capacity = llms_copy[lid].service_capacity if is_shared else float('inf')
+            llm_capacity = llms_copy[
+                lid].service_capacity if is_shared else float('inf')
             if llm_capacity < 1e-9:
                 continue
 
             # 分流粒度为LLM剩余容量
             push_flow = min(llm_capacity, remaining)
 
-            dist, prev = net.dijkstra_with_capacity(uid, push_flow, target_id=lid)
+            dist, prev = net.dijkstra_with_capacity(uid,
+                                                    push_flow,
+                                                    target_id=lid)
 
             if dist[lid] < float('inf'):
                 path = net.get_path(prev, uid, lid)
@@ -623,7 +606,8 @@ def task_offloading(network, users: Dict, llms: Dict, user_ideal_llms: Dict, **k
                     for link in net.links.get(src, []):
                         if link.dst == dst and not link.is_reverse:
                             path_links.append(link)
-                            bottleneck = min(bottleneck, link.residual_capacity)
+                            bottleneck = min(bottleneck,
+                                             link.residual_capacity)
                             break
 
                 # 实际推送流量受路径瓶颈限制
@@ -635,8 +619,10 @@ def task_offloading(network, users: Dict, llms: Dict, user_ideal_llms: Dict, **k
                     if is_shared:
                         llms_copy[lid].service_capacity -= actual_push
 
-                    path_cost = sum(link.distance for link in path_links) * actual_push
-                    allocations.append((uid, lid, path, actual_push, path_cost))
+                    path_cost = sum(link.distance
+                                    for link in path_links) * actual_push
+                    allocations.append(
+                        (uid, lid, path, actual_push, path_cost))
                     total_cost += path_cost
                     served_flow += actual_push
                     remaining -= actual_push
@@ -648,30 +634,18 @@ def task_offloading(network, users: Dict, llms: Dict, user_ideal_llms: Dict, **k
         'total_cost': total_cost,
         'total_flow': total_demand,
         'served_flow': served_flow,
-        'acceptance_ratio': acceptance_ratio
+        'acceptance_ratio': acceptance_ratio,
+        'network': net
     }
 
 
-def task_offloading_aggregate(network, users: Dict, llms: Dict, user_ideal_llms: Dict, **kwargs) -> Dict[str, Any]:
+# TODO: 记得改成我的新想法
+
+
+def LLM_split_aggregate(network, users: Dict, llms: Dict,
+                        user_ideal_llms: Dict, **kwargs) -> Dict[str, Any]:
     """
-    任务卸载算法（带汇集图）
-
-    策略：
-    - 所有用户连接到超源S，所有LLM连接到超汇T
-    - 按当前最大用户节点的流量作为推流量，寻找S->T的最短路径，根据实际路径选择的用户推送流量
-    - 推送流量的大小为用户剩余流量和llm剩余容量的最小值
-
-    Args:
-        network: Network对象
-        users: {user_id: User对象} 字典
-        llms: {llm_id: LLM对象} 字典
-        user_ideal_llms: {user_id: {llm_id: cost, ...}} 字典（可选，不使用）
-        **kwargs:
-            - is_shared: bool, LLM容量是否共享（默认True）
-            - epsilon_cost: float, S->user和LLM->T边的极小成本（默认1e-9）
-
-    Returns:
-        同no_split
+    LLM分流算法
     """
     is_shared = kwargs.get('is_shared', True)
     epsilon_cost = kwargs.get('epsilon_cost', 1e-9)
@@ -703,69 +677,94 @@ def task_offloading_aggregate(network, users: Dict, llms: Dict, user_ideal_llms:
     # 记录每个用户剩余流量
     user_remaining = {uid: user.bw for uid, user in users.items()}
 
+    # 边际成本贪心：每轮选择当前成本最小的用户分配
     while True:
-        # 找到当前最大流量的用户
-        max_user = None
-        max_demand = 0
-        for uid, remaining in user_remaining.items():
-            if remaining > 1e-9 and remaining > max_demand:
-                max_demand = remaining
-                max_user = uid
+        best_marginal_cost = float('inf')
+        best_user = None
+        best_llm = None
+        best_path_links = None
+        best_push_flow = 0
+        best_path_without_ST = None
 
-        if max_user is None:
+        # 评估所有有剩余流量的用户
+        for uid in users.keys():
+            if user_remaining[uid] < 1e-9:
+                continue
+
+            # 用该用户的剩余流量作为推流量，寻找S->T的最短路径
+            user_demand = user_remaining[uid]
+            dist, prev = net.dijkstra_with_capacity(S,
+                                                    user_demand,
+                                                    target_id=T)
+
+            if dist[T] >= float('inf'):
+                continue  # 该用户无可行路径
+
+            # 重建路径
+            path = net.get_path(prev, S, T)
+            if len(path) < 4:
+                continue
+
+            path_links = []
+            bottleneck = float('inf')
+
+            for i in range(len(path) - 1):
+                src, dst = path[i], path[i + 1]
+                for link in net.links.get(src, []):
+                    if link.dst == dst and not link.is_reverse:
+                        path_links.append(link)
+                        bottleneck = min(bottleneck, link.residual_capacity)
+                        break
+
+            # 识别路径中的用户和LLM
+            actual_user = path[1]
+            actual_llm = path[-2]
+
+            if actual_user != uid:
+                continue  # 路径选择了其他用户
+            if actual_llm not in llms_copy:
+                continue
+
+            # 计算可推送流量（固定粒度，体现边际成本贪心）
+            llm_capacity = llms_copy[
+                actual_llm].service_capacity if is_shared else float('inf')
+            max_push = min(bottleneck, user_remaining[actual_user],
+                           llm_capacity)
+
+            # 固定粒度10：平衡决策次数和服务率
+            push_flow = min(10, max_push)
+
+            if push_flow < 1e-9:
+                continue
+
+            # 计算边际成本（每单位流量的成本，排除S->user和LLM->T边）
+            path_distance = sum(link.distance for link in path_links[1:-1])
+            marginal_cost = path_distance * push_flow
+
+            # 选择边际成本最小的
+            if marginal_cost < best_marginal_cost:
+                best_marginal_cost = marginal_cost
+                best_user = actual_user
+                best_llm = actual_llm
+                best_path_links = path_links
+                best_push_flow = push_flow
+                best_path_without_ST = path[1:-1]
+
+        # 如果没有找到可行分配，结束
+        if best_user is None:
             break
 
-        # 寻找S->T的最短路径（推流量为max_demand）
-        dist, prev = net.dijkstra_with_capacity(S, max_demand, target_id=T)
-
-        if dist[T] >= float('inf'):
-            break  # 无可行路径
-
-        # 重建路径
-        path = net.get_path(prev, S, T)
-        path_links = []
-        bottleneck = float('inf')
-
-        for i in range(len(path) - 1):
-            src, dst = path[i], path[i + 1]
-            for link in net.links.get(src, []):
-                if link.dst == dst and not link.is_reverse:
-                    path_links.append(link)
-                    bottleneck = min(bottleneck, link.residual_capacity)
-                    break
-
-        # 识别路径中的用户和LLM
-        if len(path) < 4:
-            break
-
-        actual_user = path[1]
-        actual_llm = path[-2]
-
-        if actual_user not in users or actual_llm not in llms_copy:
-            break
-
-        # 推送流量的大小为用户剩余流量和llm剩余容量的最小值
-        user_demand = user_remaining[actual_user]
-        llm_capacity = llms_copy[actual_llm].service_capacity if is_shared else float('inf')
-        push_flow = min(bottleneck, user_demand, llm_capacity)
-
-        if push_flow < 1e-9:
-            break
-
-        net.send_flow(path_links, push_flow)
+        # 推送最优分配
+        net.send_flow(best_path_links, best_push_flow)
 
         # 更新用户剩余流量
-        user_remaining[actual_user] -= push_flow
+        user_remaining[best_user] -= best_push_flow
 
-        # 记录分配（去掉S和T节点）
-        path_without_ST = path[1:-1]
-        # 计算成本（排除S->user和LLM->T边）
-        path_cost = sum(
-            link.distance for link in path_links[1:-1]
-        ) * push_flow
-        allocations.append((actual_user, actual_llm, path_without_ST, push_flow, path_cost))
-        total_cost += path_cost
-        served_flow += push_flow
+        # 记录分配
+        allocations.append((best_user, best_llm, best_path_without_ST,
+                            best_push_flow, best_marginal_cost))
+        total_cost += best_marginal_cost
+        served_flow += best_push_flow
 
     acceptance_ratio = served_flow / total_demand if total_demand > 0 else 0.0
 
@@ -774,47 +773,15 @@ def task_offloading_aggregate(network, users: Dict, llms: Dict, user_ideal_llms:
         'total_cost': total_cost,
         'total_flow': total_demand,
         'served_flow': served_flow,
-        'acceptance_ratio': acceptance_ratio
+        'acceptance_ratio': acceptance_ratio,
+        'network': net
     }
 
 
-def bottleneck_split_augment(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, Any]:
+def bottleneck_split_augment(network, users: Dict, llms: Dict,
+                             **kwargs) -> Dict[str, Any]:
     """
     瓶颈分流增广算法（带汇集图+负环消除）
-
-    策略：
-    - 生成汇集图：S->users, LLMs->T（单向边，极小成本）
-    - 使用链路瓶颈流量作为每一轮的推流粒度
-    - 每轮增广前消除负环
-    - 每轮推流后通过BFS重建当前分配状态并记录
-
-    Args:
-        network: Network对象
-        users: {user_id: User对象} 字典
-        llms: {llm_id: LLM对象} 字典
-        **kwargs:
-            - is_shared: bool, LLM容量是否共享（默认True）
-            - epsilon_cost: float, S->user和LLM->T边的极小成本（默认1e-9）
-
-    Returns:
-        {
-            'allocations': [...],  # 最终准确的分配结果
-            'total_cost': float,  # 实际成本
-            'round_allocations': [  # 每一轮的分配状态
-                {
-                    'round': int,
-                    'allocations': [...],
-                    'round_cost': float,
-                    'cumulative_cost': float,
-                    'round_flow': float,
-                    'cumulative_flow': float
-                },
-                ...
-            ],
-            'total_flow': float,
-            'served_flow': float,
-            'acceptance_ratio': float
-        }
     """
     is_shared = kwargs.get('is_shared', True)
     epsilon_cost = kwargs.get('epsilon_cost', 1e-9)
@@ -840,35 +807,82 @@ def bottleneck_split_augment(network, users: Dict, llms: Dict, **kwargs) -> Dict
 
     total_demand = sum(u.bw for u in users.values())
 
-    # 记录每一轮的分配状态
+    # 记录每一轮的推流状态
     round_allocations = []
     cumulative_cost = 0.0
     cumulative_flow = 0.0
     round_num = 0
+
+    # 定义 SPFA 查找增广路径（在残量网络上，含反向边）
+    def find_augmenting_path_spfa(source, sink):
+        """
+        使用 SPFA 在残量网络上查找最短增广路径
+
+        返回:
+            (dist, prev_with_links) 其中 prev_with_links[v] = (u, link)
+        """
+        from collections import deque
+
+        dist = {nid: float('inf') for nid in net.nodes}
+        prev = {nid: None for nid in net.nodes}
+        in_queue = {nid: False for nid in net.nodes}
+
+        dist[source] = 0
+        queue = deque([source])
+        in_queue[source] = True
+
+        while queue:
+            u = queue.popleft()
+            in_queue[u] = False
+
+            for link in net.links.get(u, []):
+                # 检查残余容量
+                if link.residual_capacity < 1e-9:
+                    continue
+
+                v = link.dst
+                # 计算成本：反向边使用负成本
+                cost = link.distance if not link.is_reverse else -link.reverse.distance
+
+                if dist[u] + cost < dist[v] - 1e-9:
+                    dist[v] = dist[u] + cost
+                    prev[v] = (u, link)  # 记录边对象！
+
+                    if not in_queue[v]:
+                        queue.append(v)
+                        in_queue[v] = True
+
+        return dist, prev
 
     # 循环增广
     while True:
         # 消除负环
         net.cancel_negative_cycles()
 
-        # 寻找S->T的最短路径
-        dist, prev = net.dijkstra_with_capacity(S, float('inf'), target_id=T)
+        # 使用 SPFA 查找增广路径（含反向边）
+        dist, prev = find_augmenting_path_spfa(S, T)
 
         if dist[T] >= float('inf'):
             break
 
-        # 重建路径
-        path = net.get_path(prev, S, T)
+        # 提取路径：使用记录的边对象
         path_links = []
-        bottleneck = float('inf')
+        path_nodes = []
+        cur = T
+        while cur != S:
+            if prev[cur] is None:
+                break  # 路径不完整
+            prev_node, prev_link = prev[cur]
+            path_links.append(prev_link)
+            path_nodes.append(cur)
+            cur = prev_node
 
-        for i in range(len(path) - 1):
-            src, dst = path[i], path[i + 1]
-            for link in net.links.get(src, []):
-                if link.dst == dst and not link.is_reverse:
-                    path_links.append(link)
-                    bottleneck = min(bottleneck, link.residual_capacity)
-                    break
+        path_nodes.append(S)
+        path_nodes.reverse()
+        path_links.reverse()
+
+        # 计算瓶颈容量
+        bottleneck = min(link.residual_capacity for link in path_links)
 
         if bottleneck < 1e-9:
             break
@@ -876,43 +890,41 @@ def bottleneck_split_augment(network, users: Dict, llms: Dict, **kwargs) -> Dict
         # 推送流量
         net.send_flow(path_links, bottleneck)
 
-        # 每轮推流后，使用BFS重建当前的分配状态
-        round_num += 1
-        round_allocs = []
+        # 计算本轮实际成本（排除 S->user 和 LLM->T 的虚拟边）
         round_cost = 0.0
-        round_flow = 0.0
+        for i, link in enumerate(path_links):
+            if i == 0 or i == len(path_links) - 1:  # 跳过第一条和最后一条
+                continue
+            # 正向边加成本，反向边减成本（因为反向边是回收流量）
+            if not link.is_reverse:
+                round_cost += link.distance * bottleneck
+            else:
+                round_cost -= link.reverse.distance * bottleneck
 
-        for uid, user in users.items():
-            user_allocations = _trace_user_flow_bfs(net, uid, users, llms_copy, S, T)
-            round_allocs.extend(user_allocations)
-
-            for _, _, _, flow, cost in user_allocations:
-                round_flow += flow
-                round_cost += cost
-
-        cumulative_cost = round_cost
-        cumulative_flow = round_flow
+        cumulative_cost += round_cost
+        cumulative_flow += bottleneck
+        round_num += 1
 
         # 记录本轮状态
         round_allocations.append({
             'round': round_num,
-            'allocations': round_allocs,
+            'push_flow': bottleneck,
             'round_cost': round_cost,
             'cumulative_cost': cumulative_cost,
-            'round_flow': round_flow,
-            'cumulative_flow': cumulative_flow
+            'cumulative_flow': cumulative_flow,
+            'path': path_nodes[1:-1]  # 去掉 S 和 T
         })
 
-    # 最终分配状态（最后一轮的结果）
-    if round_allocations:
-        final_round = round_allocations[-1]
-        allocations = final_round['allocations']
-        total_cost = final_round['cumulative_cost']
-        served_flow = final_round['cumulative_flow']
-    else:
-        allocations = []
-        total_cost = 0.0
-        served_flow = 0.0
+    # 最终用 BFS 重建一次，得到完整的分配结果
+    allocations = []
+    for uid, user in users.items():
+        user_allocations = _trace_user_flow_bfs(net, uid, users, llms_copy, S,
+                                                T)
+        allocations.extend(user_allocations)
+
+    # 计算最终总成本和服务流量
+    total_cost = cumulative_cost
+    served_flow = cumulative_flow
 
     acceptance_ratio = served_flow / total_demand if total_demand > 0 else 0.0
 
@@ -922,7 +934,8 @@ def bottleneck_split_augment(network, users: Dict, llms: Dict, **kwargs) -> Dict
         'round_allocations': round_allocations,
         'total_flow': total_demand,
         'served_flow': served_flow,
-        'acceptance_ratio': acceptance_ratio
+        'acceptance_ratio': acceptance_ratio,
+        'network': net
     }
 
 
@@ -1010,10 +1023,10 @@ def one_split(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, Any]:
                 # 记录分配（去掉S和T节点）
                 path_without_ST = path[1:-1]
                 # 计算成本（排除S->user和LLM->T边）
-                path_cost = sum(
-                    link.distance for link in path_links[1:-1]
-                ) * push_flow
-                allocations.append((actual_user, actual_llm, path_without_ST, push_flow, path_cost))
+                path_cost = sum(link.distance
+                                for link in path_links[1:-1]) * push_flow
+                allocations.append((actual_user, actual_llm, path_without_ST,
+                                    push_flow, path_cost))
                 total_cost += path_cost
                 served_flow += push_flow
 
@@ -1024,11 +1037,13 @@ def one_split(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, Any]:
         'total_cost': total_cost,
         'total_flow': total_demand,
         'served_flow': served_flow,
-        'acceptance_ratio': acceptance_ratio
+        'acceptance_ratio': acceptance_ratio,
+        'network': net
     }
 
 
-def one_split_augment(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, Any]:
+def one_split_augment(network, users: Dict, llms: Dict,
+                      **kwargs) -> Dict[str, Any]:
     """
     1-split增广算法（带负环消除）
 
@@ -1090,35 +1105,82 @@ def one_split_augment(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, A
 
     total_demand = sum(u.bw for u in users.values())
 
-    # 记录每一轮的分配状态
+    # 记录每一轮的推流状态
     round_allocations = []
     cumulative_cost = 0.0
     cumulative_flow = 0.0
     round_num = 0
+
+    # 定义 SPFA 查找增广路径（在残量网络上，含反向边）
+    def find_augmenting_path_spfa(source, sink):
+        """
+        使用 SPFA 在残量网络上查找最短增广路径
+
+        返回:
+            (dist, prev_with_links) 其中 prev_with_links[v] = (u, link)
+        """
+        from collections import deque
+
+        dist = {nid: float('inf') for nid in net.nodes}
+        prev = {nid: None for nid in net.nodes}
+        in_queue = {nid: False for nid in net.nodes}
+
+        dist[source] = 0
+        queue = deque([source])
+        in_queue[source] = True
+
+        while queue:
+            u = queue.popleft()
+            in_queue[u] = False
+
+            for link in net.links.get(u, []):
+                # 检查残余容量
+                if link.residual_capacity < 1e-9:
+                    continue
+
+                v = link.dst
+                # 计算成本：反向边使用负成本
+                cost = link.distance if not link.is_reverse else -link.reverse.distance
+
+                if dist[u] + cost < dist[v] - 1e-9:
+                    dist[v] = dist[u] + cost
+                    prev[v] = (u, link)  # 记录边对象！
+
+                    if not in_queue[v]:
+                        queue.append(v)
+                        in_queue[v] = True
+
+        return dist, prev
 
     # 循环增广，每次推流粒度为1
     while True:
         # 消除负环
         net.cancel_negative_cycles()
 
-        # 寻找S->T的最短路径（推流量为1）
-        dist, prev = net.dijkstra_with_capacity(S, 1, target_id=T)
+        # 使用 SPFA 查找增广路径（含反向边）
+        dist, prev = find_augmenting_path_spfa(S, T)
 
         if dist[T] >= float('inf'):
             break
 
-        # 重建路径
-        path = net.get_path(prev, S, T)
+        # 提取路径：使用记录的边对象（参考 successive_shortest_paths）
         path_links = []
-        bottleneck = float('inf')
+        path_nodes = []
+        cur = T
+        while cur != S:
+            if prev[cur] is None:
+                break  # 路径不完整
+            prev_node, prev_link = prev[cur]
+            path_links.append(prev_link)
+            path_nodes.append(cur)
+            cur = prev_node
 
-        for i in range(len(path) - 1):
-            src, dst = path[i], path[i + 1]
-            for link in net.links.get(src, []):
-                if link.dst == dst and not link.is_reverse:
-                    path_links.append(link)
-                    bottleneck = min(bottleneck, link.residual_capacity)
-                    break
+        path_nodes.append(S)
+        path_nodes.reverse()
+        path_links.reverse()
+
+        # 计算瓶颈容量
+        bottleneck = min(link.residual_capacity for link in path_links)
 
         # 推流粒度为1
         push_flow = min(1, bottleneck)
@@ -1129,43 +1191,41 @@ def one_split_augment(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, A
         # 推送流量
         net.send_flow(path_links, push_flow)
 
-        # 每轮推流后，使用BFS重建当前的分配状态
-        round_num += 1
-        round_allocs = []
+        # 计算本轮实际成本（排除 S->user 和 LLM->T 的虚拟边）
         round_cost = 0.0
-        round_flow = 0.0
+        for i, link in enumerate(path_links):
+            if i == 0 or i == len(path_links) - 1:  # 跳过第一条和最后一条
+                continue
+            # 正向边加成本，反向边减成本（因为反向边是回收流量）
+            if not link.is_reverse:
+                round_cost += link.distance * push_flow
+            else:
+                round_cost -= link.reverse.distance * push_flow
 
-        for uid, user in users.items():
-            user_allocations = _trace_user_flow_bfs(net, uid, users, llms_copy, S, T)
-            round_allocs.extend(user_allocations)
-
-            for _, _, _, flow, cost in user_allocations:
-                round_flow += flow
-                round_cost += cost
-
-        cumulative_cost = round_cost
-        cumulative_flow = round_flow
+        cumulative_cost += round_cost
+        cumulative_flow += push_flow
+        round_num += 1
 
         # 记录本轮状态
         round_allocations.append({
             'round': round_num,
-            'allocations': round_allocs,
+            'push_flow': push_flow,
             'round_cost': round_cost,
             'cumulative_cost': cumulative_cost,
-            'round_flow': round_flow,
-            'cumulative_flow': cumulative_flow
+            'cumulative_flow': cumulative_flow,
+            'path': path_nodes[1:-1]  # 去掉 S 和 T
         })
 
-    # 最终分配状态（最后一轮的结果）
-    if round_allocations:
-        final_round = round_allocations[-1]
-        allocations = final_round['allocations']
-        total_cost = final_round['cumulative_cost']
-        served_flow = final_round['cumulative_flow']
-    else:
-        allocations = []
-        total_cost = 0.0
-        served_flow = 0.0
+    # 最终用 BFS 重建一次，得到完整的分配结果
+    allocations = []
+    for uid, user in users.items():
+        user_allocations = _trace_user_flow_bfs(net, uid, users, llms_copy, S,
+                                                T)
+        allocations.extend(user_allocations)
+
+    # 计算最终总成本和服务流量
+    total_cost = cumulative_cost
+    served_flow = cumulative_flow
 
     acceptance_ratio = served_flow / total_demand if total_demand > 0 else 0.0
 
@@ -1175,7 +1235,8 @@ def one_split_augment(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, A
         'round_allocations': round_allocations,
         'total_flow': total_demand,
         'served_flow': served_flow,
-        'acceptance_ratio': acceptance_ratio
+        'acceptance_ratio': acceptance_ratio,
+        'network': net
     }
 
 
@@ -1185,15 +1246,16 @@ ALGORITHMS = {
     'no-split-aggregate': no_split_aggregate,
     'bottleneck-split': bottleneck_split,
     'bottleneck-split-no-aggregate': bottleneck_split_no_aggregate,
-    'task-offloading': task_offloading,
-    'task-offloading-aggregate': task_offloading_aggregate,
+    'LLM-split': LLM_split,
+    'LLM-split-aggregate': LLM_split_aggregate,
     'bottleneck-split-augment': bottleneck_split_augment,
     '1-split': one_split,
     '1-split-augment': one_split_augment,
 }
 
 
-def run_algorithm(algorithm_name: str, network, users: Dict, llms: Dict, **kwargs) -> Dict[str, Any]:
+def run_algorithm(algorithm_name: str, network, users: Dict, llms: Dict,
+                  **kwargs) -> Dict[str, Any]:
     """
     运行指定的路由算法
 
@@ -1211,6 +1273,7 @@ def run_algorithm(algorithm_name: str, network, users: Dict, llms: Dict, **kwarg
         ValueError: 如果算法名称不存在
     """
     if algorithm_name not in ALGORITHMS:
-        raise ValueError(f"未知算法: {algorithm_name}. 可用算法: {list(ALGORITHMS.keys())}")
+        raise ValueError(
+            f"未知算法: {algorithm_name}. 可用算法: {list(ALGORITHMS.keys())}")
 
     return ALGORITHMS[algorithm_name](network, users, llms, **kwargs)

@@ -22,7 +22,7 @@ NETWORK_SIZES = [20]  # 中等规模网络节点数
 NETWORK_BANDWIDTHS = [100, 200, 300, 400]  # 全网络带宽（Gbps）
 LLM_CAPACITIES_MEDIUM = [100, 150, 200]  # 中等规模LLM容量（Gbps）
 LLM_CAPACITIES_LARGE = [200, 250, 300]  # 大规模LLM容量（Gbps）
-DISTRIBUTIONS = ['uniform', 'sparse', 'poisson', 'gaussian']  # 节点分布
+DISTRIBUTIONS = ['uniform']  # 节点分布
 
 # 算法列表（需要user_ideal_llms的算法单独标记）
 ALGORITHMS = [
@@ -43,11 +43,11 @@ ALGORITHMS = [
         'need_ideal': True
     },
     {
-        'name': 'task-offloading',
+        'name': 'LLM-split',
         'need_ideal': True
     },
     {
-        'name': 'task-offloading-aggregate',
+        'name': 'LLM-split-aggregate',
         'need_ideal': True
     },
     {
@@ -129,7 +129,7 @@ def calculate_key_link_utilization(network, top_n=20) -> float:
 def calculate_avg_distance_llm_to_user(network, users: Dict,
                                        llms: Dict) -> float:
     """
-    计算LLM到user的平均距离（sigmoid归一化）
+    计算user到LLM的平均距离（sigmoid归一化）
 
     Args:
         network: Network对象
@@ -141,14 +141,12 @@ def calculate_avg_distance_llm_to_user(network, users: Dict,
     """
     distances = []
 
-    for lid in llms.keys():
-        for uid in users.keys():
-            # 使用Dijkstra计算距离（忽略容量约束）
-            dist, _ = network.dijkstra_with_capacity(lid,
-                                                     float('inf'),
-                                                     target_id=uid)
-            if dist[uid] < float('inf'):
-                distances.append(dist[uid])
+    for uid in users.keys():
+        for lid in llms.keys():
+            # 使用Dijkstra计算距离（从user到LLM，忽略容量约束）
+            dist, _ = network.dijkstra_with_capacity(uid, 0, target_id=lid)
+            if dist[lid] < float('inf'):
+                distances.append(dist[lid])
 
     if distances:
         # 所有距离加和
@@ -275,8 +273,9 @@ def run_single_experiment(network, users: Dict, llms: Dict,
     total_cost = result['total_cost']
     acceptance_ratio = result['acceptance_ratio']
 
-    # 计算关键链路利用率（使用运行后的网络状态）
-    key_link_util = calculate_key_link_utilization(net_copy, top_n=20)
+    # 计算关键链路利用率（使用算法返回的网络状态）
+    result_network = result.get('network', net_copy)
+    key_link_util = calculate_key_link_utilization(result_network, top_n=20)
 
     # 计算平均距离（使用原始网络）
     avg_distance = calculate_avg_distance_llm_to_user(network, users, llms)
@@ -429,6 +428,8 @@ def run_experiments_for_network_size(network_size: int,
                                     algo_name,
                                     '迭代次数':
                                     round_data['round'],
+                                    '本轮开销':
+                                    round_data['round_cost'],
                                     '截至当前轮次总花销':
                                     round_data['cumulative_cost']
                                 })
