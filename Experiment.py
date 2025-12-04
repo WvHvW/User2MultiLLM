@@ -19,10 +19,10 @@ import Algorithm
 
 # 实验配置
 NETWORK_SIZES = [20]  # 中等规模网络节点数
-NETWORK_BANDWIDTHS = [50, 80, 100, 150, 200]  # 全网络带宽（Gbps）
-LLM_CAPACITIES_MEDIUM = [100, 150, 200]  # 中等规模LLM容量（Gbps）
+NETWORK_BANDWIDTHS = [50, 60, 80, 100, 150]  # 全网络带宽（Gbps）- 恢复到合理范围
+LLM_CAPACITIES_MEDIUM = [80, 100, 120]  # 中等规模LLM容量（Gbps）- 保持竞争性
 LLM_CAPACITIES_LARGE = [200, 250, 300]  # 大规模LLM容量（Gbps）
-DISTRIBUTIONS = ['uniform', 'sparse', 'poisson', 'gaussian']  # 节点分布
+DISTRIBUTIONS = ['uniform']  # 节点分布 - 先测试单一分布
 
 # 算法列表（需要user_ideal_llms的算法单独标记）
 ALGORITHMS = [
@@ -32,15 +32,23 @@ ALGORITHMS = [
     },
     {
         'name': 'no-split',
-        'need_ideal': False
+        'need_ideal': True
+    },
+    {
+        'name': 'no-split-ideal-llm',
+        'need_ideal': True
     },
     {
         'name': '1-split',
-        'need_ideal': False
+        'need_ideal': True
+    },
+    {
+        'name': '1-split-no-aggregate',
+        'need_ideal': True
     },
     {
         'name': 'bottleneck-split',
-        'need_ideal': False
+        'need_ideal': True
     },
     {
         'name': 'bottleneck-split-no-aggregate',
@@ -326,7 +334,8 @@ def run_experiments_for_network_size(network_size: int,
     size_comparison_results = []
 
     # 存储withdraw-optimization结果（用于withdraw-optimization.xlsx）
-    withdraw_optimization_results = []
+    # 数据结构: {(bandwidth, llm_capacity, user_dist, llm_dist): {'1-split-no-aggregate': [...], '1-split': [...], '1-split-augment': [...]}}
+    withdraw_optimization_data = {}
 
     # 多层循环
     total_experiments = len(NETWORK_BANDWIDTHS) * len(llm_capacities) * len(
@@ -349,6 +358,11 @@ def run_experiments_for_network_size(network_size: int,
                     except Exception as e:
                         print(f"  加载网络数据失败: {e}")
                         continue
+
+                    # 配置标识
+                    config_key = (bandwidth, llm_capacity, user_dist, llm_dist)
+                    if config_key not in withdraw_optimization_data:
+                        withdraw_optimization_data[config_key] = {}
 
                     # 运行所有算法
                     for algo_config in ALGORITHMS:
@@ -412,27 +426,13 @@ def run_experiments_for_network_size(network_size: int,
                             exp_result['acceptance_ratio']
                         })
 
-                        # 记录withdraw-optimization结果（只记录1-split和1-split-augment）
+                        # 记录withdraw-optimization结果（记录1-split-no-aggregate、1-split和1-split-augment）
                         if algo_name in [
-                                '1-split', '1-split-augment'
+                                '1-split-no-aggregate', '1-split',
+                                '1-split-augment'
                         ] and exp_result['round_allocations'] is not None:
-                            for round_data in exp_result['round_allocations']:
-                                withdraw_optimization_results.append({
-                                    'user_llm_dist':
-                                    f"{user_dist}-{llm_dist}",
-                                    '带宽设置':
-                                    bandwidth,
-                                    'LLM服务容量设置':
-                                    llm_capacity,
-                                    '算法名':
-                                    algo_name,
-                                    '迭代次数':
-                                    round_data['round'],
-                                    '本轮开销':
-                                    round_data['round_cost'],
-                                    '截至当前轮次总花销':
-                                    round_data['cumulative_cost']
-                                })
+                            withdraw_optimization_data[config_key][
+                                algo_name] = exp_result['round_allocations']
 
     # 保存详细结果到N-xxx-results.xlsx，增加“优化率”字段
     detailed_df = pd.DataFrame(detailed_results)
@@ -470,7 +470,7 @@ def run_experiments_for_network_size(network_size: int,
                                  results_root)
 
     # 保存withdraw-optimization结果到withdraw-optimization.xlsx
-    save_withdraw_optimization_results(withdraw_optimization_results,
+    save_withdraw_optimization_results(withdraw_optimization_data,
                                        network_size, results_root)
 
 
@@ -515,28 +515,72 @@ def save_size_comparison_results(results: List[Dict],
     print(f"规模对比结果已保存到: {excel_path}")
 
 
-def save_withdraw_optimization_results(results: List[Dict],
+def save_withdraw_optimization_results(data: Dict,
                                        network_size: int,
                                        results_root='results'):
     """
     保存withdraw-optimization结果到withdraw-optimization.xlsx
 
+    新格式：每行包含三个算法在同一轮次的累积开销
+    列：带宽设置、LLM服务容量设置、1-split-no-aggregate算法名、1-split算法名、1-split-augment算法名、
+        迭代次数、1-split-no-aggregate截至当前轮次总花销、1-split截至当前轮次总花销、1-split-augment截至当前轮次总花销
+
     Args:
-        results: 结果列表（1-split和1-split-augment的每轮数据）
+        data: {(bandwidth, llm_capacity, user_dist, llm_dist): {'1-split-no-aggregate': [...], '1-split': [...], '1-split-augment': [...]}}
         network_size: 网络节点数
         results_root: results根目录
     """
-    if not results:
+    if not data:
         print(f"无withdraw-optimization数据需要保存")
         return
 
     # 按user_llm_dist分组
     grouped_results = {}
-    for result in results:
-        user_llm_dist = result.pop('user_llm_dist')
+
+    for config_key, algo_results in data.items():
+        bandwidth, llm_capacity, user_dist, llm_dist = config_key
+        user_llm_dist = f"{user_dist}-{llm_dist}"
+
         if user_llm_dist not in grouped_results:
             grouped_results[user_llm_dist] = []
-        grouped_results[user_llm_dist].append(result)
+
+        # 获取三个算法的round_allocations
+        no_agg_rounds = algo_results.get('1-split-no-aggregate', [])
+        one_split_rounds = algo_results.get('1-split', [])
+        augment_rounds = algo_results.get('1-split-augment', [])
+
+        # 找到最大轮次数
+        max_rounds = max(
+            len(no_agg_rounds) if no_agg_rounds else 0,
+            len(one_split_rounds) if one_split_rounds else 0,
+            len(augment_rounds) if augment_rounds else 0)
+
+        # 合并同一轮次的数据
+        for round_idx in range(max_rounds):
+            row = {
+                '带宽设置':
+                bandwidth,
+                'LLM服务容量设置':
+                llm_capacity,
+                '1-split-no-aggregate':
+                '1-split-no-aggregate',
+                '1-split':
+                '1-split',
+                '1-split-augment':
+                '1-split-augment',
+                '迭代次数':
+                round_idx + 1,
+                '1-split-no-aggregate截至当前轮次总花销':
+                no_agg_rounds[round_idx]['cumulative_cost']
+                if round_idx < len(no_agg_rounds) else np.nan,
+                '1-split截至当前轮次总花销':
+                one_split_rounds[round_idx]['cumulative_cost']
+                if round_idx < len(one_split_rounds) else np.nan,
+                '1-split-augment截至当前轮次总花销':
+                augment_rounds[round_idx]['cumulative_cost']
+                if round_idx < len(augment_rounds) else np.nan
+            }
+            grouped_results[user_llm_dist].append(row)
 
     if not grouped_results:
         print(f"withdraw-optimization数据分组为空，跳过保存")
