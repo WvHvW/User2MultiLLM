@@ -140,8 +140,11 @@ def no_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
     total_demand = sum(u.bw for u in users.values())
     served_flow = 0.0
 
-    # 按dict顺序处理用户
-    for uid, user in users.items():
+    # 按用户流量需求降序排序处理
+    sorted_users = sorted(users.items(), key=lambda x: x[1].bw, reverse=True)
+
+    # 按流量需求降序处理用户
+    for uid, user in sorted_users:
         demand = user.bw
 
         # 找到该用户的第一个可用LLM
@@ -163,7 +166,9 @@ def no_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
             continue
 
         # 计算到target_llm的路径
-        dist, prev = net.dijkstra_with_capacity(uid, demand, target_id=target_llm)
+        dist, prev = net.dijkstra_with_capacity(uid,
+                                                demand,
+                                                target_id=target_llm)
 
         if dist[target_llm] >= float('inf'):
             continue
@@ -202,15 +207,15 @@ def no_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
     }
 
 
-def no_split_aggregate(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, Any]:
+def no_split_aggregate(network, users: Dict, llms: Dict,
+                       **kwargs) -> Dict[str, Any]:
     """
-    不分流算法（带汇集图，按需求档位优化）
+    不分流算法（带汇集图，只有超汇T）
 
     策略：
-    - 所有用户连接到超源S，所有LLM连接到超汇T
-    - 建立集合，收集所有用户的流量需求
-    - 每轮使用集合内的需求值进行推流，选择花销最小的路径
-    - 若该需求对应的用户都已分配完成，则从集合删除此需求
+    - 只创建超汇T，所有LLM连接到T
+    - 每轮从每个用户出发路由到T，选择花销最小的路径
+    - 推送用户的完整流量（不分流）
     """
     is_shared = kwargs.get('is_shared', True)
     epsilon_cost = kwargs.get('epsilon_cost', 1e-9)
@@ -218,16 +223,10 @@ def no_split_aggregate(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, 
     net = copy.deepcopy(network)
     llms_copy = copy.deepcopy(llms)
 
-    # 创建超级源点S和超级汇点T
-    S = -1
+    # 创建超级汇点T（没有超源S）
     T = -2
     import Entity
-    net.add_node(Entity.Node(S, 0, 0))
     net.add_node(Entity.Node(T, 0, 0))
-
-    # 连接S到所有用户（单向边）
-    for uid, user in users.items():
-        net.add_one_way_link(S, uid, user.bw, epsilon_cost)
 
     # 连接所有LLM到T（单向边）
     for lid, llm in llms_copy.items():
@@ -242,38 +241,34 @@ def no_split_aggregate(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, 
     # 记录每个用户是否已分配
     user_allocated = {uid: False for uid in users.keys()}
 
-    # 建立需求集合（去重）
-    demand_set = set(user.bw for user in users.values())
-
-    while demand_set:
-        # 每轮对集合中的每个需求值尝试寻路，选择花销最小的
+    while True:
+        # 每轮从每个用户出发到T寻路，选择花销最小的
         best_cost = float('inf')
-        best_demand = None
-        best_path = None
-        best_path_links = None
         best_user = None
         best_llm = None
+        best_path = None
+        best_path_links = None
 
-        for demand in demand_set:
-            # 从S出发，找到T的最短路径（推流量=demand）
-            dist, prev = net.dijkstra_with_capacity(S, demand, target_id=T)
+        for uid, user in users.items():
+            if user_allocated[uid]:
+                continue
+
+            demand = user.bw
+
+            # 从该用户出发到T的最短路径
+            dist, prev = net.dijkstra_with_capacity(uid, demand, target_id=T)
 
             if dist[T] >= float('inf'):
                 continue
 
             # 重建路径
-            path = net.get_path(prev, S, T)
-            if len(path) < 4:  # 至少需要S->user->...->LLM->T
+            path = net.get_path(prev, uid, T)
+            if len(path) < 3:  # 至少需要user->...->LLM->T
                 continue
 
-            actual_user = path[1]  # S后面的第一个节点是用户
             actual_llm = path[-2]  # T前面的节点是LLM
 
-            # 验证用户是否属于当前需求档位且未分配
-            if actual_user not in users or users[actual_user].bw != demand:
-                continue
-            if user_allocated[actual_user]:
-                continue
+            # 验证
             if actual_llm not in llms_copy:
                 continue
 
@@ -292,153 +287,18 @@ def no_split_aggregate(network, users: Dict, llms: Dict, **kwargs) -> Dict[str, 
             if bottleneck < demand - 1e-9:
                 continue
 
-            # 计算成本（排除S->user和LLM->T边）
-            path_cost = sum(link.distance for link in path_links[1:-1]) * demand
+            # 计算成本（排除LLM->T边）
+            path_cost = sum(link.distance for link in path_links[:-1]) * demand
 
             # 选择开销最小的
             if path_cost < best_cost:
                 best_cost = path_cost
-                best_demand = demand
+                best_user = uid
+                best_llm = actual_llm
                 best_path = path
                 best_path_links = path_links
-                best_user = actual_user
-                best_llm = actual_llm
 
         # 如果本轮没有找到可行路径，结束
-        if best_user is None:
-            break
-
-        # 推送流量
-        net.send_flow(best_path_links, best_demand)
-
-        # 更新LLM容量
-        if is_shared:
-            llms_copy[best_llm].service_capacity -= best_demand
-
-        # 标记用户已分配
-        user_allocated[best_user] = True
-
-        # 记录分配（去掉S和T节点）
-        path_without_ST = best_path[1:-1]
-        allocations.append(
-            (best_user, best_llm, path_without_ST, best_demand, best_cost))
-        total_cost += best_cost
-        served_flow += best_demand
-
-        # 检查该需求对应的所有用户是否都已分配完成
-        all_allocated = True
-        for uid, user in users.items():
-            if user.bw == best_demand and not user_allocated[uid]:
-                all_allocated = False
-                break
-
-        # 如果该需求档位的所有用户都已分配，从集合删除
-        if all_allocated:
-            demand_set.discard(best_demand)
-
-    acceptance_ratio = served_flow / total_demand if total_demand > 0 else 0.0
-
-    return {
-        'allocations': allocations,
-        'total_cost': total_cost,
-        'total_flow': total_demand,
-        'served_flow': served_flow,
-        'acceptance_ratio': acceptance_ratio,
-        'network': net
-    }
-
-
-def no_split_ideal_llm(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
-                       **kwargs) -> Dict[str, Any]:
-    """
-    不分流算法（基于user_ideal_llms的遍历版本）
-
-    策略：
-    - 每轮遍历所有未分配用户
-    - 对每个用户，计算到其user_ideal_llms中每个候选LLM的路径成本
-    - 选择造成总成本增加最小的(user, LLM)配对
-    - 推送用户的完整流量（不分流）
-    """
-    is_shared = kwargs.get('is_shared', True)
-
-    net = copy.deepcopy(network)
-    llms_copy = copy.deepcopy(llms)
-
-    allocations = []
-    total_cost = 0.0
-    total_demand = sum(u.bw for u in users.values())
-    served_flow = 0.0
-
-    # 记录每个用户是否已分配
-    user_allocated = {uid: False for uid in users.keys()}
-
-    while True:
-        # 每轮对所有未分配用户计算路径成本，选择最小的
-        best_cost = float('inf')
-        best_user = None
-        best_llm = None
-        best_path = None
-        best_path_links = None
-
-        for uid, user in users.items():
-            if user_allocated[uid]:
-                continue
-
-            demand = user.bw
-
-            # 结合user_ideal_llms，只考虑该用户的候选LLM
-            ideal_llms = user_ideal_llms.get(uid, {})
-            if not ideal_llms:
-                continue
-
-            candidate_llms = [lid for lid, _ in sorted(ideal_llms.items(),
-                                                       key=lambda x: x[1])]
-
-            for lid in candidate_llms:
-                if lid not in llms_copy:
-                    continue
-
-                # 检查LLM容量
-                if is_shared and llms_copy[lid].service_capacity < demand:
-                    continue
-
-                # 从用户到LLM的最短路径
-                dist, prev = net.dijkstra_with_capacity(uid, demand, target_id=lid)
-
-                if dist[lid] >= float('inf'):
-                    continue
-
-                # 重建路径
-                path = net.get_path(prev, uid, lid)
-                if not path:
-                    continue
-
-                path_links = []
-                bottleneck = float('inf')
-                for i in range(len(path) - 1):
-                    src, dst = path[i], path[i + 1]
-                    for link in net.links.get(src, []):
-                        if link.dst == dst and not link.is_reverse:
-                            path_links.append(link)
-                            bottleneck = min(bottleneck, link.residual_capacity)
-                            break
-
-                # 检查瓶颈容量是否满足完整需求
-                if bottleneck < demand - 1e-9:
-                    continue
-
-                # 计算成本
-                path_cost = sum(link.distance for link in path_links) * demand
-
-                # 选择成本最小的
-                if path_cost < best_cost:
-                    best_cost = path_cost
-                    best_user = uid
-                    best_llm = lid
-                    best_path = path
-                    best_path_links = path_links
-
-        # 如果没有找到可行路径，结束
         if best_user is None:
             break
 
@@ -454,8 +314,10 @@ def no_split_ideal_llm(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
         # 标记用户已分配
         user_allocated[best_user] = True
 
-        # 记录分配
-        allocations.append((best_user, best_llm, best_path, demand, best_cost))
+        # 记录分配（去掉T节点）
+        path_without_T = best_path[:-1]
+        allocations.append(
+            (best_user, best_llm, path_without_T, demand, best_cost))
         total_cost += best_cost
         served_flow += demand
 
@@ -532,8 +394,10 @@ def bottleneck_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
             if not ideal_llms:
                 candidate_llms = list(llms_copy.keys())
             else:
-                candidate_llms = [lid for lid, _ in sorted(ideal_llms.items(),
-                                                           key=lambda x: x[1])]
+                candidate_llms = [
+                    lid for lid, _ in sorted(ideal_llms.items(),
+                                             key=lambda x: x[1])
+                ]
 
             for lid in candidate_llms:
                 if lid not in llms_copy:
@@ -544,7 +408,9 @@ def bottleneck_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
                     continue
 
                 # 从用户到LLM的最短路径
-                dist, prev = net.dijkstra_with_capacity(uid, 1e-9, target_id=lid)
+                dist, prev = net.dijkstra_with_capacity(uid,
+                                                        1e-9,
+                                                        target_id=lid)
 
                 if dist[lid] >= float('inf'):
                     continue
@@ -561,7 +427,8 @@ def bottleneck_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
                     for link in net.links.get(src, []):
                         if link.dst == dst and not link.is_reverse:
                             path_links.append(link)
-                            bottleneck = min(bottleneck, link.residual_capacity)
+                            bottleneck = min(bottleneck,
+                                             link.residual_capacity)
                             break
 
                 # 检查S→user边的容量
@@ -589,7 +456,8 @@ def bottleneck_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
                     continue
 
                 # 计算成本（user->...->LLM的真实路径成本）
-                path_cost = sum(link.distance for link in path_links) * push_flow
+                path_cost = sum(link.distance
+                                for link in path_links) * push_flow
 
                 # 选择成本最小的
                 if path_cost < best_cost:
@@ -677,7 +545,10 @@ def bottleneck_split_no_aggregate(network, users: Dict, llms: Dict,
     total_demand = sum(u.bw for u in users.values())
     served_flow = 0.0
 
-    for uid, user in users.items():
+    # 按用户流量需求降序排序处理
+    sorted_users = sorted(users.items(), key=lambda x: x[1].bw, reverse=True)
+
+    for uid, user in sorted_users:
         remaining = user.bw
 
         if uid not in user_ideal_llms:
@@ -785,7 +656,10 @@ def one_split_no_aggregate(network, users: Dict, llms: Dict,
     cumulative_flow = 0.0
     round_num = 0
 
-    for uid, user in users.items():
+    # 按用户流量需求降序排序处理
+    sorted_users = sorted(users.items(), key=lambda x: x[1].bw, reverse=True)
+
+    for uid, user in sorted_users:
         remaining = user.bw
 
         if uid not in user_ideal_llms:
@@ -908,7 +782,10 @@ def LLM_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
     total_demand = sum(u.bw for u in users.values())
     served_flow = 0.0
 
-    for uid, user in users.items():
+    # 按用户流量需求降序排序处理
+    sorted_users = sorted(users.items(), key=lambda x: x[1].bw, reverse=True)
+
+    for uid, user in sorted_users:
         remaining = user.bw
 
         if uid not in user_ideal_llms:
@@ -982,9 +859,12 @@ def LLM_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
 def LLM_split_aggregate(network, users: Dict, llms: Dict,
                         user_ideal_llms: Dict, **kwargs) -> Dict[str, Any]:
     """
-    LLM 分流算法（带汇集图，使用 user_ideal_llms 排序，按 LLM 剩余容量和用户剩余需求推流）。
-    - S->user 边权重 = 用户到其 user_ideal_llms 中第一个可用 LLM 的距离（映射到极小量级）；
-    - 每轮更新一次该权重；
+    LLM分流算法（带汇集图，只有超汇T）
+
+    策略：
+    - 只创建超汇T，所有LLM连接到T
+    - 每轮从每个用户出发路由到T，选择花销最小的路径
+    - 推流粒度为min(用户剩余需求, 最小LLM剩余容量)
     """
     is_shared = kwargs.get('is_shared', True)
     epsilon_cost = kwargs.get('epsilon_cost', 1e-9)
@@ -992,19 +872,12 @@ def LLM_split_aggregate(network, users: Dict, llms: Dict,
     net = copy.deepcopy(network)
     llms_copy = copy.deepcopy(llms)
 
-    S = -1
+    # 创建超级汇点T（没有超源S）
     T = -2
     import Entity
-    net.add_node(Entity.Node(S, 0, 0))
     net.add_node(Entity.Node(T, 0, 0))
 
-    # 连接 S->user（单向边），记录边对象以便每轮更新权重
-    s_to_user_links: Dict[int, Any] = {}
-    for uid, user in users.items():
-        net.add_one_way_link(S, uid, user.bw, epsilon_cost)
-        s_to_user_links[uid] = net.links[S][-1]
-
-    # 连接 llm->T（单向边）
+    # 连接所有LLM到T（单向边）
     for lid, llm in llms_copy.items():
         capacity = llm.service_capacity if is_shared else float('inf')
         net.add_one_way_link(lid, T, capacity, epsilon_cost)
@@ -1013,85 +886,105 @@ def LLM_split_aggregate(network, users: Dict, llms: Dict,
     total_cost = 0.0
     total_demand = sum(u.bw for u in users.values())
     served_flow = 0.0
+
+    # 记录每个用户剩余流量
     user_remaining = {uid: user.bw for uid, user in users.items()}
 
     while True:
-        # 每一轮根据当前 llm 可用容量，更新 S->user 权重：
-        # 权重 = user 到其 user_ideal_llms 中第一个“当前仍有剩余容量”的 llm 的距离 value
-        for uid, link in s_to_user_links.items():
-            if user_remaining[uid] <= 1e-9:
-                continue
-            ideals = user_ideal_llms.get(uid)
-            if not ideals:
-                continue
-            min_dist = None
-            for lid, dist in sorted(ideals.items(), key=lambda x: x[1]):
-                llm_obj = llms_copy.get(lid)
-                if llm_obj is None:
-                    continue
-                if is_shared and llm_obj.service_capacity <= 1e-9:
-                    continue
-                min_dist = dist
-                break
-            if min_dist is None:
-                # 当前没有可用 llm，这个 user 在本轮几乎不会被选中
-                link.distance = 1e9
-            else:
-                link.distance = float(min_dist)
-
-        # 计算全局最小用户需求和全局最小 llm 剩余容量
-        min_user = min((rem for rem in user_remaining.values() if rem > 1e-9),
-                       default=0.0)
-        if min_user <= 1e-9:
-            break
+        # 计算最小LLM剩余容量
         if is_shared:
             min_llm = min(
                 (llm.service_capacity
                  for llm in llms_copy.values() if llm.service_capacity > 1e-9),
                 default=0.0)
         else:
-            min_llm = min_user
+            min_llm = float('inf')
+
         if min_llm <= 1e-9:
             break
 
-        # 本轮推流粒度：min(最小用户剩余需求, 最小 llm 剩余容量)
-        push_flow = min(min_user, min_llm)
+        # 每轮从每个用户出发到T寻路，选择花销最小的
+        best_cost = float('inf')
+        best_user = None
+        best_llm = None
+        best_path = None
+        best_path_links = None
+        best_push_flow = 0
 
-        # 在汇集图上寻找一条可承载 push_flow 的 S->T 最短路径
-        dist, prev = net.dijkstra_with_capacity(S, push_flow, target_id=T)
-        if dist.get(T, float('inf')) >= float('inf'):
+        for uid, user in users.items():
+            if user_remaining[uid] <= 1e-9:
+                continue
+
+            # 推流粒度为min(用户剩余需求, 最小LLM剩余容量)
+            push_flow = min(user_remaining[uid], min_llm)
+
+            # 从该用户出发到T的最短路径
+            dist, prev = net.dijkstra_with_capacity(uid,
+                                                    push_flow,
+                                                    target_id=T)
+
+            if dist[T] >= float('inf'):
+                continue
+
+            # 重建路径
+            path = net.get_path(prev, uid, T)
+            if len(path) < 3:  # 至少需要user->...->LLM->T
+                continue
+
+            actual_llm = path[-2]  # T前面的节点是LLM
+
+            # 验证
+            if actual_llm not in llms_copy:
+                continue
+
+            # 重建路径上的边
+            path_links = []
+            bottleneck = float('inf')
+            for i in range(len(path) - 1):
+                src, dst = path[i], path[i + 1]
+                for link in net.links.get(src, []):
+                    if link.dst == dst and not link.is_reverse:
+                        path_links.append(link)
+                        bottleneck = min(bottleneck, link.residual_capacity)
+                        break
+
+            # 检查瓶颈容量
+            if bottleneck < push_flow - 1e-9:
+                continue
+
+            # 计算成本（排除LLM->T边）
+            path_cost = sum(link.distance
+                            for link in path_links[:-1]) * push_flow
+
+            # 选择开销最小的
+            if path_cost < best_cost:
+                best_cost = path_cost
+                best_user = uid
+                best_llm = actual_llm
+                best_path = path
+                best_path_links = path_links
+                best_push_flow = push_flow
+
+        # 如果本轮没有找到可行路径，结束
+        if best_user is None:
             break
 
-        path = net.get_path(prev, S, T)
-        if len(path) < 4:
-            break
+        # 推送流量
+        net.send_flow(best_path_links, best_push_flow)
 
-        actual_user = path[1]
-        actual_llm = path[-2]
-        if actual_user not in users or actual_llm not in llms_copy:
-            break
+        # 更新用户剩余流量
+        user_remaining[best_user] -= best_push_flow
 
-        # 重建路径上的边集合以计算成本
-        path_links = []
-        for i in range(len(path) - 1):
-            src, dst = path[i], path[i + 1]
-            for link in net.links.get(src, []):
-                if link.dst == dst and not link.is_reverse:
-                    path_links.append(link)
-                    break
-
-        # 推流并更新状态
-        net.send_flow(path_links, push_flow)
-        user_remaining[actual_user] -= push_flow
+        # 更新LLM容量
         if is_shared:
-            llms_copy[actual_llm].service_capacity -= push_flow
+            llms_copy[best_llm].service_capacity -= best_push_flow
 
-        path_distance = sum(link.distance for link in path_links[1:-1])
-        cost = path_distance * push_flow
+        # 记录分配（去掉T节点）
+        path_without_T = best_path[:-1]
         allocations.append(
-            (actual_user, actual_llm, path[1:-1], push_flow, cost))
-        total_cost += cost
-        served_flow += push_flow
+            (best_user, best_llm, path_without_T, best_push_flow, best_cost))
+        total_cost += best_cost
+        served_flow += best_push_flow
 
     acceptance_ratio = (served_flow /
                         total_demand if total_demand > 0 else 0.0)
@@ -1334,8 +1227,10 @@ def one_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
             if not ideal_llms:
                 candidate_llms = list(llms_copy.keys())
             else:
-                candidate_llms = [lid for lid, _ in sorted(ideal_llms.items(),
-                                                           key=lambda x: x[1])]
+                candidate_llms = [
+                    lid for lid, _ in sorted(ideal_llms.items(),
+                                             key=lambda x: x[1])
+                ]
 
             for lid in candidate_llms:
                 if lid not in llms_copy:
@@ -1363,7 +1258,8 @@ def one_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
                     for link in net.links.get(src, []):
                         if link.dst == dst and not link.is_reverse:
                             path_links.append(link)
-                            bottleneck = min(bottleneck, link.residual_capacity)
+                            bottleneck = min(bottleneck,
+                                             link.residual_capacity)
                             break
 
                 # 检查S→user边的容量
@@ -1387,7 +1283,8 @@ def one_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
                     continue
 
                 # 计算成本（user->...->LLM的真实路径成本）
-                path_cost = sum(link.distance for link in path_links) * push_flow
+                path_cost = sum(link.distance
+                                for link in path_links) * push_flow
 
                 # 选择成本最小的
                 if path_cost < best_cost:
@@ -1672,7 +1569,6 @@ def one_split_augment(network, users: Dict, llms: Dict,
 ALGORITHMS = {
     'no-split': no_split,
     'no-split-aggregate': no_split_aggregate,
-    'no-split-ideal-llm': no_split_ideal_llm,
     'bottleneck-split': bottleneck_split,
     'bottleneck-split-no-aggregate': bottleneck_split_no_aggregate,
     'LLM-split': LLM_split,

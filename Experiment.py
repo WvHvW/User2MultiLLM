@@ -35,10 +35,6 @@ ALGORITHMS = [
         'need_ideal': True
     },
     {
-        'name': 'no-split-ideal-llm',
-        'need_ideal': True
-    },
-    {
         'name': '1-split',
         'need_ideal': True
     },
