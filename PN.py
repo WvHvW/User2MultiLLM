@@ -626,7 +626,7 @@ def assign_llm_nodes_by_distribution(G,
 # ========== 网络生成方式选择 ==========
 # 设置为 True 使用自定义网络（修改 create_custom_network 函数内的坐标和边）
 # 设置为 False 使用随机生成网络
-USE_CUSTOM_NETWORK = True
+USE_CUSTOM_NETWORK = False
 
 # 生成基础网络拓扑
 if USE_CUSTOM_NETWORK:

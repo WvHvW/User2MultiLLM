@@ -18,11 +18,11 @@ import Entity
 import Algorithm
 
 # 实验配置
-NETWORK_SIZES = [20]  # 中等规模网络节点数
-NETWORK_BANDWIDTHS = [50, 60, 80, 100, 150]  # 全网络带宽（Gbps）- 恢复到合理范围
-LLM_CAPACITIES_MEDIUM = [80, 100, 120]  # 中等规模LLM容量（Gbps）- 保持竞争性
-LLM_CAPACITIES_LARGE = [200, 250, 300]  # 大规模LLM容量（Gbps）
-DISTRIBUTIONS = ['uniform']  # 节点分布 - 先测试单一分布
+NETWORK_SIZES = [20, 40, 60, 80, 100, 200, 300, 400]
+NETWORK_BANDWIDTHS = [50, 65, 80, 200, 300, 400]  # 全网络带宽（Gbps）
+LLM_CAPACITIES_MEDIUM = [80, 90, 100, 125, 150, 200]  # 中等规模LLM容量（Gbps）
+LLM_CAPACITIES_LARGE = [250, 300, 350, 400, 450, 500]  # 大规模LLM容量（Gbps）
+DISTRIBUTIONS = ['uniform', 'poisson', 'sparse', 'gaussian']
 
 # 算法列表（需要user_ideal_llms的算法单独标记）
 ALGORITHMS = [
@@ -77,12 +77,19 @@ ALGORITHMS = [
 ]
 
 
-def calculate_key_link_utilization(network, top_n=20) -> float:
+def calculate_key_link_utilization(network,
+                                   users: Dict,
+                                   llms: Dict,
+                                   top_n=20) -> float:
     """
     计算前N条关键链路的平均利用率（根据介数中心性排列）
 
+    注意：介数中心性只计算User集合到LLM集合之间的路径
+
     Args:
         network: Network对象（运行算法后的状态）
+        users: 用户字典
+        llms: LLM字典
         top_n: 前N条关键链路
 
     Returns:
@@ -91,26 +98,44 @@ def calculate_key_link_utilization(network, top_n=20) -> float:
     import networkx as nx
 
     # 构建NetworkX图用于计算介数中心性
-    G = nx.DiGraph()
+    G = nx.Graph()  # 使用无向图（因为物理链路是双向的）
 
-    # 添加所有节点
-    for node_id in network.nodes.keys():
-        G.add_node(node_id)
+    # 定义超级源汇点（需要排除）
+    S = -1
+    T = -2
+    virtual_nodes = {S, T}
 
-    # 添加所有正向边（非反向边）
+    # 添加所有物理节点（排除S和T）
     edge_flows = {}
     edge_capacities = {}
+
+    for node_id in network.nodes.keys():
+        if node_id not in virtual_nodes:
+            G.add_node(node_id)
+
+    # 添加所有物理边（排除涉及S和T的边）
     for src, links in network.links.items():
         for link in links:
             if not link.is_reverse:
-                G.add_edge(link.src, link.dst)
+                # 排除涉及虚拟节点的边
+                if link.src in virtual_nodes or link.dst in virtual_nodes:
+                    continue
+
+                # 无向图中只添加一次
+                if not G.has_edge(link.src, link.dst):
+                    G.add_edge(link.src, link.dst)
                 edge_key = (link.src, link.dst)
                 edge_flows[edge_key] = link.flow
                 edge_capacities[edge_key] = link.capacity
 
-    # 计算边介数中心性
+    # 计算User集合到LLM集合之间的边介数中心性
+    user_set = set(users.keys())
+    llm_set = set(llms.keys())
+
     try:
-        edge_betweenness = nx.edge_betweenness_centrality(G, weight=None)
+        # 只计算从user集合到llm集合的最短路径经过的边
+        edge_betweenness = nx.edge_betweenness_centrality_subset(
+            G, sources=user_set, targets=llm_set, normalized=True)
     except:
         # 如果图不连通或其他错误，返回0
         return 0.0
@@ -126,10 +151,18 @@ def calculate_key_link_utilization(network, top_n=20) -> float:
     # 计算这些边的平均利用率
     utilizations = []
     for edge, _ in top_edges:
+        # 检查正向和反向边
         if edge in edge_flows and edge in edge_capacities:
             capacity = edge_capacities[edge]
             if capacity > 1e-9:
                 util = edge_flows[edge] / capacity
+                utilizations.append(util)
+        elif (edge[1], edge[0]) in edge_flows and (edge[1],
+                                                   edge[0]) in edge_capacities:
+            # 检查反向边
+            capacity = edge_capacities[(edge[1], edge[0])]
+            if capacity > 1e-9:
+                util = edge_flows[(edge[1], edge[0])] / capacity
                 utilizations.append(util)
 
     if utilizations:
@@ -288,7 +321,10 @@ def run_single_experiment(network, users: Dict, llms: Dict,
 
     # 计算关键链路利用率（使用算法返回的网络状态）
     result_network = result.get('network', net_copy)
-    key_link_util = calculate_key_link_utilization(result_network, top_n=20)
+    key_link_util = calculate_key_link_utilization(result_network,
+                                                   users,
+                                                   llms,
+                                                   top_n=20)
 
     # 计算平均距离（使用原始网络）
     avg_distance = calculate_avg_distance_llm_to_user(network, users, llms)
