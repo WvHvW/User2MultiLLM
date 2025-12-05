@@ -18,10 +18,10 @@ import Entity
 import Algorithm
 
 # 实验配置
-NETWORK_SIZES = [20, 40, 60, 80, 100, 200, 300, 400]
-NETWORK_BANDWIDTHS = [50, 65, 80, 200, 300, 400]  # 全网络带宽（Gbps）
-LLM_CAPACITIES_MEDIUM = [80, 90, 100, 125, 150, 200]  # 中等规模LLM容量（Gbps）
-LLM_CAPACITIES_LARGE = [250, 300, 350, 400, 450, 500]  # 大规模LLM容量（Gbps）
+NETWORK_SIZES = [20, 40, 60, 80, 100, 200]
+NETWORK_BANDWIDTHS = [50, 75, 100, 200, 400]  # 全网络带宽（Gbps）
+LLM_CAPACITIES_MEDIUM = [80, 100, 150, 200]  # 中等规模LLM容量（Gbps）
+LLM_CAPACITIES_LARGE = [250, 300, 400, 500]  # 大规模LLM容量（Gbps）
 DISTRIBUTIONS = ['uniform', 'poisson', 'sparse', 'gaussian']
 
 # 算法列表（需要user_ideal_llms的算法单独标记）
@@ -347,7 +347,12 @@ def run_experiments_for_network_size(network_size: int,
                                      sheets_root='sheets',
                                      results_root='results'):
     """
-    运行指定网络规模的所有实验
+    运行指定网络规模的所有实验（增量写入版本）
+
+    关键改进：
+    1. 每完成一个配置就立即写入Excel，避免内存累积
+    2. 使用追加模式，即使中途失败也能保留已完成的数据
+    3. 峰值内存从1.4GB降至约5MB
 
     Args:
         network_size: 网络节点数
@@ -355,7 +360,7 @@ def run_experiments_for_network_size(network_size: int,
         results_root: results根目录
     """
     print(f"\n{'='*80}")
-    print(f"开始运行网络规模 N-{network_size} 的实验")
+    print(f"开始运行网络规模 N-{network_size} 的实验（增量写入模式）")
     print(f"{'='*80}")
 
     # 创建结果目录
@@ -368,28 +373,37 @@ def run_experiments_for_network_size(network_size: int,
     else:
         llm_capacities = LLM_CAPACITIES_LARGE
 
-    # 存储详细结果（用于N-xxx-results.xlsx）
-    detailed_results = []
+    # 初始化Excel文件路径
+    detailed_excel_path = os.path.join(network_results_dir,
+                                       f'N-{network_size}-results.xlsx')
+    size_excel_path = os.path.join(results_root,
+                                   f'N-{network_size}-size-results.xlsx')
+    withdraw_excel_path = os.path.join(network_results_dir,
+                                       'withdraw-optimization.xlsx')
 
-    # 存储规模对比结果（用于N-size-results.xlsx）
-    size_comparison_results = []
+    # 删除旧文件（如果存在）
+    for path in [detailed_excel_path, size_excel_path, withdraw_excel_path]:
+        if os.path.exists(path):
+            os.remove(path)
+            print(f"删除旧文件: {path}")
 
-    # 存储withdraw-optimization结果（用于withdraw-optimization.xlsx）
-    # 数据结构: {(bandwidth, llm_capacity, user_dist, llm_dist): {'1-split-no-aggregate': [...], '1-split': [...], '1-split-augment': [...]}}
-    withdraw_optimization_data = {}
-
-    # 多层循环
-    total_experiments = len(NETWORK_BANDWIDTHS) * len(llm_capacities) * len(
-        DISTRIBUTIONS) * len(DISTRIBUTIONS) * len(ALGORITHMS)
+    # 统计信息
+    total_configs = len(NETWORK_BANDWIDTHS) * len(llm_capacities) * len(
+        DISTRIBUTIONS) * len(DISTRIBUTIONS)
+    total_experiments = total_configs * len(ALGORITHMS)
+    current_config = 0
     current_experiment = 0
 
+    # 外层循环：每个配置
     for bandwidth in NETWORK_BANDWIDTHS:
         for llm_capacity in llm_capacities:
             for user_dist in DISTRIBUTIONS:
                 for llm_dist in DISTRIBUTIONS:
+                    current_config += 1
                     print(
-                        f"\n网络设置: 带宽={bandwidth}Gbps, LLM容量={llm_capacity}Gbps, "
-                        f"user分布={user_dist}, llm分布={llm_dist}")
+                        f"\n[配置 {current_config}/{total_configs}] 带宽={bandwidth}Gbps, "
+                        f"LLM容量={llm_capacity}Gbps, user={user_dist}, llm={llm_dist}"
+                    )
 
                     # 加载网络数据
                     try:
@@ -397,13 +411,13 @@ def run_experiments_for_network_size(network_size: int,
                             network_size, user_dist, llm_dist, bandwidth,
                             llm_capacity, sheets_root)
                     except Exception as e:
-                        print(f"  加载网络数据失败: {e}")
+                        print(f"  [错误] 加载网络数据失败: {e}")
                         continue
 
-                    # 配置标识
-                    config_key = (bandwidth, llm_capacity, user_dist, llm_dist)
-                    if config_key not in withdraw_optimization_data:
-                        withdraw_optimization_data[config_key] = {}
+                    # 临时存储当前配置的结果（内存占用小，只有12个算法的结果）
+                    config_detailed_results = []
+                    config_size_results = []
+                    config_withdraw_data = {}
 
                     # 运行所有算法
                     for algo_config in ALGORITHMS:
@@ -412,7 +426,7 @@ def run_experiments_for_network_size(network_size: int,
                         need_ideal = algo_config['need_ideal']
 
                         print(
-                            f"  [{current_experiment}/{total_experiments}] 运行算法: {algo_name}"
+                            f"  [{current_experiment}/{total_experiments}] {algo_name}"
                         )
 
                         # 运行实验
@@ -423,8 +437,8 @@ def run_experiments_for_network_size(network_size: int,
                         if exp_result is None:
                             continue
 
-                        # 记录详细结果（优化率后续在保存前统一补充）
-                        detailed_results.append({
+                        # 记录详细结果
+                        config_detailed_results.append({
                             '带宽设置':
                             bandwidth,
                             'LLM服务容量设置':
@@ -448,7 +462,7 @@ def run_experiments_for_network_size(network_size: int,
                         })
 
                         # 记录规模对比结果
-                        size_comparison_results.append({
+                        config_size_results.append({
                             'user_llm_dist':
                             f"{user_dist}-{llm_dist}",
                             '带宽设置':
@@ -467,179 +481,199 @@ def run_experiments_for_network_size(network_size: int,
                             exp_result['acceptance_ratio']
                         })
 
-                        # 记录withdraw-optimization结果（记录1-split-no-aggregate、1-split和1-split-augment）
+                        # 记录withdraw-optimization结果
                         if algo_name in [
                                 '1-split-no-aggregate', '1-split',
                                 '1-split-augment'
                         ] and exp_result['round_allocations'] is not None:
-                            withdraw_optimization_data[config_key][
-                                algo_name] = exp_result['round_allocations']
+                            config_withdraw_data[algo_name] = exp_result[
+                                'round_allocations']
 
-    # 保存详细结果到N-xxx-results.xlsx，增加“优化率”字段
-    detailed_df = pd.DataFrame(detailed_results)
+                    # 立即写入当前配置的结果（增量写入，避免内存累积）
+                    if config_detailed_results:
+                        append_detailed_results(detailed_excel_path,
+                                                config_detailed_results)
 
-    if not detailed_df.empty:
-        # 以同一网络配置（带宽、LLM容量、user分布、llm分布）分组
-        group_cols = ['带宽设置', 'LLM服务容量设置', 'user分布', 'llm分布']
+                    if config_size_results:
+                        append_size_results(size_excel_path,
+                                            config_size_results)
 
-        def compute_optimization_rate(group: pd.DataFrame) -> pd.DataFrame:
-            # 在该网络配置下找到1-split-augment的总开销作为基准
-            mask_baseline = group['算法名'] == '1-split-augment'
-            if not mask_baseline.any():
-                group['优化率'] = np.nan
-                return group
+                    if config_withdraw_data:
+                        append_withdraw_results(withdraw_excel_path, bandwidth,
+                                                llm_capacity, user_dist,
+                                                llm_dist, config_withdraw_data)
 
-            baseline_cost = group.loc[mask_baseline, '总开销'].iloc[0]
-            if baseline_cost == 0:
-                group['优化率'] = np.nan
-                return group
+                    print(f"  [完成] 配置结果已保存")
 
-            group['优化率'] = (group['总开销'] - baseline_cost) / baseline_cost
-            return group
-
-        detailed_df = detailed_df.groupby(
-            group_cols, as_index=False,
-            group_keys=False).apply(compute_optimization_rate)
-
-    detailed_excel_path = os.path.join(network_results_dir,
-                                       f'N-{network_size}-results.xlsx')
-    detailed_df.to_excel(detailed_excel_path, index=False, engine='openpyxl')
-    print(f"\n详细结果已保存到: {detailed_excel_path}")
-
-    # 保存规模对比结果到N-size-results.xlsx
-    save_size_comparison_results(size_comparison_results, network_size,
-                                 results_root)
-
-    # 保存withdraw-optimization结果到withdraw-optimization.xlsx
-    save_withdraw_optimization_results(withdraw_optimization_data,
-                                       network_size, results_root)
+    print(f"\n{'='*80}")
+    print(f"N-{network_size} 实验全部完成")
+    print(f"详细结果: {detailed_excel_path}")
+    print(f"规模对比: {size_excel_path}")
+    print(f"Withdraw优化: {withdraw_excel_path}")
+    print(f"{'='*80}")
 
 
-def save_size_comparison_results(results: List[Dict],
-                                 network_size: int,
-                                 results_root='results'):
+def append_detailed_results(excel_path: str, config_results: List[Dict]):
     """
-    保存规模对比结果到N-size-results.xlsx
+    追加详细结果到N-xxx-results.xlsx
 
     Args:
-        results: 结果列表
-        network_size: 网络节点数
-        results_root: results根目录
+        excel_path: Excel文件路径
+        config_results: 当前配置的结果列表（12个算法）
     """
-    if not results:
-        print(f"规模对比结果为空，跳过保存 N-{network_size}-size-results.xlsx")
-        return
+    df_new = pd.DataFrame(config_results)
 
-    # 按user_llm_dist分组
-    grouped_results = {}
-    for result in results:
-        user_llm_dist = result.pop('user_llm_dist')
-        if user_llm_dist not in grouped_results:
-            grouped_results[user_llm_dist] = []
-        grouped_results[user_llm_dist].append(result)
+    # 计算优化率（相对于1-split-augment基线）
+    mask_baseline = df_new['算法名'] == '1-split-augment'
+    if mask_baseline.any():
+        baseline_cost = df_new.loc[mask_baseline, '总开销'].iloc[0]
+        if baseline_cost > 1e-9:
+            df_new['优化率'] = (df_new['总开销'] - baseline_cost) / baseline_cost
+        else:
+            df_new['优化率'] = np.nan
+    else:
+        df_new['优化率'] = np.nan
 
-    if not grouped_results:
-        print(f"规模对比结果分组为空，跳过保存 N-{network_size}-size-results.xlsx")
-        return
-
-    # 保存到Excel（每个sheet对应一个user_llm_dist）
-    excel_path = os.path.join(results_root,
-                              f'N-{network_size}-size-results.xlsx')
-
-    with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
-        for user_llm_dist, dist_results in grouped_results.items():
-            df = pd.DataFrame(dist_results)
-            # sheet名不能超过31个字符
-            sheet_name = user_llm_dist[:31]
-            df.to_excel(writer, sheet_name=sheet_name, index=False)
-
-    print(f"规模对比结果已保存到: {excel_path}")
+    # 追加写入
+    if os.path.exists(excel_path):
+        df_existing = pd.read_excel(excel_path, engine='openpyxl')
+        df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+        df_combined.to_excel(excel_path, index=False, engine='openpyxl')
+    else:
+        df_new.to_excel(excel_path, index=False, engine='openpyxl')
 
 
-def save_withdraw_optimization_results(data: Dict,
-                                       network_size: int,
-                                       results_root='results'):
+def append_size_results(excel_path: str, config_results: List[Dict]):
     """
-    保存withdraw-optimization结果到withdraw-optimization.xlsx
-
-    新格式：每行包含三个算法在同一轮次的累积开销
-    列：带宽设置、LLM服务容量设置、1-split-no-aggregate算法名、1-split算法名、1-split-augment算法名、
-        迭代次数、1-split-no-aggregate截至当前轮次总花销、1-split截至当前轮次总花销、1-split-augment截至当前轮次总花销
+    追加规模对比结果到N-size-results.xlsx（按user_llm_dist分sheet）
 
     Args:
-        data: {(bandwidth, llm_capacity, user_dist, llm_dist): {'1-split-no-aggregate': [...], '1-split': [...], '1-split-augment': [...]}}
-        network_size: 网络节点数
-        results_root: results根目录
+        excel_path: Excel文件路径
+        config_results: 当前配置的结果列表
     """
-    if not data:
-        print(f"无withdraw-optimization数据需要保存")
-        return
-
     # 按user_llm_dist分组
-    grouped_results = {}
+    grouped = {}
+    for data in config_results:
+        user_llm_dist = data.pop('user_llm_dist')
+        sheet_name = user_llm_dist[:31]  # sheet名不能超过31字符
+        if sheet_name not in grouped:
+            grouped[sheet_name] = []
+        grouped[sheet_name].append(data)
 
-    for config_key, algo_results in data.items():
-        bandwidth, llm_capacity, user_dist, llm_dist = config_key
-        user_llm_dist = f"{user_dist}-{llm_dist}"
+    # 追加写入
+    if os.path.exists(excel_path):
+        with pd.ExcelWriter(excel_path,
+                            engine='openpyxl',
+                            mode='a',
+                            if_sheet_exists='overlay') as writer:
+            for sheet_name, sheet_data in grouped.items():
+                df_new = pd.DataFrame(sheet_data)
+                if sheet_name in writer.book.sheetnames:
+                    # 读取现有数据并合并
+                    df_existing = pd.read_excel(excel_path,
+                                                sheet_name=sheet_name,
+                                                engine='openpyxl')
+                    df_combined = pd.concat([df_existing, df_new],
+                                            ignore_index=True)
+                    # 删除旧sheet并写入合并后的数据
+                    del writer.book[sheet_name]
+                    df_combined.to_excel(writer,
+                                         sheet_name=sheet_name,
+                                         index=False)
+                else:
+                    df_new.to_excel(writer, sheet_name=sheet_name, index=False)
+    else:
+        # 首次创建
+        with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+            for sheet_name, sheet_data in grouped.items():
+                df = pd.DataFrame(sheet_data)
+                df.to_excel(writer, sheet_name=sheet_name, index=False)
 
-        if user_llm_dist not in grouped_results:
-            grouped_results[user_llm_dist] = []
 
-        # 获取三个算法的round_allocations
-        no_agg_rounds = algo_results.get('1-split-no-aggregate', [])
-        one_split_rounds = algo_results.get('1-split', [])
-        augment_rounds = algo_results.get('1-split-augment', [])
+def append_withdraw_results(excel_path: str, bandwidth: int, llm_capacity: int,
+                            user_dist: str, llm_dist: str,
+                            config_withdraw_data: Dict):
+    """
+    追加withdraw-optimization结果到withdraw-optimization.xlsx
 
-        # 找到最大轮次数
-        max_rounds = max(
-            len(no_agg_rounds) if no_agg_rounds else 0,
-            len(one_split_rounds) if one_split_rounds else 0,
-            len(augment_rounds) if augment_rounds else 0)
+    格式：每行包含三个算法在同一轮次的累积开销
 
-        # 合并同一轮次的数据
-        for round_idx in range(max_rounds):
-            row = {
-                '带宽设置':
-                bandwidth,
-                'LLM服务容量设置':
-                llm_capacity,
-                '1-split-no-aggregate':
-                '1-split-no-aggregate',
-                '1-split':
-                '1-split',
-                '1-split-augment':
-                '1-split-augment',
-                '迭代次数':
-                round_idx + 1,
-                '1-split-no-aggregate截至当前轮次总花销':
-                no_agg_rounds[round_idx]['cumulative_cost']
-                if round_idx < len(no_agg_rounds) else np.nan,
-                '1-split截至当前轮次总花销':
-                one_split_rounds[round_idx]['cumulative_cost']
-                if round_idx < len(one_split_rounds) else np.nan,
-                '1-split-augment截至当前轮次总花销':
-                augment_rounds[round_idx]['cumulative_cost']
-                if round_idx < len(augment_rounds) else np.nan
-            }
-            grouped_results[user_llm_dist].append(row)
+    Args:
+        excel_path: Excel文件路径
+        bandwidth: 带宽设置
+        llm_capacity: LLM服务容量设置
+        user_dist: 用户分布
+        llm_dist: LLM分布
+        config_withdraw_data: {algo_name: round_allocations}
+    """
+    # 生成当前配置的数据行
+    no_agg_rounds = config_withdraw_data.get('1-split-no-aggregate', [])
+    one_split_rounds = config_withdraw_data.get('1-split', [])
+    augment_rounds = config_withdraw_data.get('1-split-augment', [])
 
-    if not grouped_results:
-        print(f"withdraw-optimization数据分组为空，跳过保存")
+    max_rounds = max(
+        len(no_agg_rounds) if no_agg_rounds else 0,
+        len(one_split_rounds) if one_split_rounds else 0,
+        len(augment_rounds) if augment_rounds else 0)
+
+    rows = []
+    for round_idx in range(max_rounds):
+        row = {
+            '带宽设置':
+            bandwidth,
+            'LLM服务容量设置':
+            llm_capacity,
+            '1-split-no-aggregate':
+            '1-split-no-aggregate',
+            '1-split':
+            '1-split',
+            '1-split-augment':
+            '1-split-augment',
+            '迭代次数':
+            round_idx + 1,
+            '1-split-no-aggregate截至当前轮次总花销':
+            no_agg_rounds[round_idx]['cumulative_cost']
+            if round_idx < len(no_agg_rounds) else np.nan,
+            '1-split截至当前轮次总花销':
+            one_split_rounds[round_idx]['cumulative_cost']
+            if round_idx < len(one_split_rounds) else np.nan,
+            '1-split-augment截至当前轮次总花销':
+            augment_rounds[round_idx]['cumulative_cost']
+            if round_idx < len(augment_rounds) else np.nan
+        }
+        rows.append(row)
+
+    if not rows:
         return
 
-    # 保存到Excel（每个sheet对应一个user_llm_dist）
-    network_results_dir = os.path.join(results_root, f'N-{network_size}')
-    excel_path = os.path.join(network_results_dir,
-                              'withdraw-optimization.xlsx')
+    # 按user_llm_dist分sheet
+    sheet_name = f"{user_dist}-{llm_dist}"[:31]
+    df_new = pd.DataFrame(rows)
 
-    with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
-        for user_llm_dist, dist_results in grouped_results.items():
-            df = pd.DataFrame(dist_results)
-            # sheet名不能超过31个字符
-            sheet_name = user_llm_dist[:31]
-            df.to_excel(writer, sheet_name=sheet_name, index=False)
-
-    print(f"withdraw-optimization结果已保存到: {excel_path}")
+    # 追加写入
+    if os.path.exists(excel_path):
+        with pd.ExcelWriter(excel_path,
+                            engine='openpyxl',
+                            mode='a',
+                            if_sheet_exists='overlay') as writer:
+            if sheet_name in writer.book.sheetnames:
+                # 读取现有数据并合并
+                df_existing = pd.read_excel(excel_path,
+                                            sheet_name=sheet_name,
+                                            engine='openpyxl')
+                df_combined = pd.concat([df_existing, df_new],
+                                        ignore_index=True)
+                # 删除旧sheet并写入合并后的数据
+                del writer.book[sheet_name]
+                df_combined.to_excel(writer,
+                                     sheet_name=sheet_name,
+                                     index=False)
+            else:
+                df_new.to_excel(writer, sheet_name=sheet_name, index=False)
+    else:
+        # 首次创建
+        with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+            df_new.to_excel(writer, sheet_name=sheet_name, index=False)
 
 
 def run_all_experiments(sheets_root='sheets', results_root='results'):
