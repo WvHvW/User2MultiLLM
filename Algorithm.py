@@ -336,11 +336,11 @@ def no_split_aggregate(network, users: Dict, llms: Dict,
 def bottleneck_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
                      **kwargs) -> Dict[str, Any]:
     """
-    瓶颈分流算法（带汇集图）
+    瓶颈分流算法（汇集图版本）
 
     策略：
     - 利用汇集图结构（S→users→network→LLMs→T）
-    - 每轮对所有未完全分配用户，结合user_ideal_llms，计算到每个候选LLM的路径成本    - 选择造成总成本增加最小的(用户,LLM)对进行分配
+    - 每轮直接从S到T找最短路径（Dijkstra，不考虑反向边）
     - 使用瓶颈流量作为推流粒度
     - 允许用户流量分流到不同LLM
     """
@@ -371,136 +371,56 @@ def bottleneck_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
     total_demand = sum(u.bw for u in users.values())
     served_flow = 0.0
 
-    # 记录每个用户剩余流量
-    user_remaining = {uid: user.bw for uid, user in users.items()}
-
     while True:
-        # 每轮对所有(用户,LLM)对计算路径成本，选择最小的
-        best_cost = float('inf')
-        best_user = None
-        best_llm = None
-        best_path = None
-        best_path_links = None
-        best_bottleneck = 0
+        # 直接从S到T找最短路径（Dijkstra，只考虑正向边）
+        dist, prev = net.dijkstra_with_capacity(S, 1e-9, target_id=T)
 
-        for uid, user in users.items():
-            if user_remaining[uid] <= 1e-9:
-                continue
-
-            remaining = user_remaining[uid]
-
-            # 结合user_ideal_llms，只考虑该用户的候选LLM
-            ideal_llms = user_ideal_llms.get(uid, {})
-            if not ideal_llms:
-                candidate_llms = list(llms_copy.keys())
-            else:
-                candidate_llms = [
-                    lid for lid, _ in sorted(ideal_llms.items(),
-                                             key=lambda x: x[1])
-                ]
-
-            for lid in candidate_llms:
-                if lid not in llms_copy:
-                    continue
-
-                # 检查LLM容量
-                if is_shared and llms_copy[lid].service_capacity <= 1e-9:
-                    continue
-
-                # 从用户到LLM的最短路径
-                dist, prev = net.dijkstra_with_capacity(uid,
-                                                        1e-9,
-                                                        target_id=lid)
-
-                if dist[lid] >= float('inf'):
-                    continue
-
-                # 重建路径
-                path = net.get_path(prev, uid, lid)
-                if not path:
-                    continue
-
-                path_links = []
-                bottleneck = float('inf')
-                for i in range(len(path) - 1):
-                    src, dst = path[i], path[i + 1]
-                    for link in net.links.get(src, []):
-                        if link.dst == dst and not link.is_reverse:
-                            path_links.append(link)
-                            bottleneck = min(bottleneck,
-                                             link.residual_capacity)
-                            break
-
-                # 检查S→user边的容量
-                for link in net.links.get(S, []):
-                    if link.dst == uid and not link.is_reverse:
-                        bottleneck = min(bottleneck, link.residual_capacity)
-                        break
-
-                # 检查LLM→T边的容量
-                for link in net.links.get(lid, []):
-                    if link.dst == T and not link.is_reverse:
-                        bottleneck = min(bottleneck, link.residual_capacity)
-                        break
-
-                # 检查瓶颈容量
-                if bottleneck <= 1e-9:
-                    continue
-
-                # 限制推流量：不超过用户剩余需求和LLM剩余容量
-                push_flow = min(bottleneck, remaining)
-                if is_shared:
-                    push_flow = min(push_flow, llms_copy[lid].service_capacity)
-
-                if push_flow <= 1e-9:
-                    continue
-
-                # 计算成本（user->...->LLM的真实路径成本）
-                path_cost = sum(link.distance
-                                for link in path_links) * push_flow
-
-                # 选择成本最小的
-                if path_cost < best_cost:
-                    best_cost = path_cost
-                    best_user = uid
-                    best_llm = lid
-                    best_path = path
-                    best_path_links = path_links
-                    best_bottleneck = push_flow
-
-        # 如果没有找到可行路径，结束
-        if best_user is None:
+        if dist[T] >= float('inf'):
             break
 
-        # 构建完整路径：S->user->...->LLM->T
-        s_to_user_link = None
-        for link in net.links[S]:
-            if link.dst == best_user and not link.is_reverse:
-                s_to_user_link = link
-                break
+        # 重建路径
+        path = net.get_path(prev, S, T)
+        if len(path) < 4:  # 至少需要 S->user->...->LLM->T
+            break
 
-        llm_to_t_link = None
-        for link in net.links[best_llm]:
-            if link.dst == T and not link.is_reverse:
-                llm_to_t_link = link
-                break
+        # 提取user和LLM
+        user_id = path[1]  # S后第一个节点是user
+        llm_id = path[-2]  # T前最后一个节点是LLM
 
-        # 推送流量（完整路径）
-        full_path_links = [s_to_user_link] + best_path_links + [llm_to_t_link]
-        net.send_flow(full_path_links, best_bottleneck)
+        # 验证
+        if user_id not in users or llm_id not in llms_copy:
+            break
 
-        # 更新用户剩余流量
-        user_remaining[best_user] -= best_bottleneck
+        # 重建路径上的边，计算瓶颈容量
+        path_links = []
+        bottleneck = float('inf')
+        for i in range(len(path) - 1):
+            src, dst = path[i], path[i + 1]
+            for link in net.links.get(src, []):
+                if link.dst == dst and not link.is_reverse:
+                    path_links.append(link)
+                    bottleneck = min(bottleneck, link.residual_capacity)
+                    break
+
+        if bottleneck <= 1e-9:
+            break
+
+        # 推送流量
+        net.send_flow(path_links, bottleneck)
 
         # 更新LLM容量
         if is_shared:
-            llms_copy[best_llm].service_capacity -= best_bottleneck
+            llms_copy[llm_id].service_capacity -= bottleneck
+
+        # 计算成本（排除S->user和LLM->T的虚拟边）
+        path_cost = sum(link.distance for link in path_links[1:-1]) * bottleneck
 
         # 记录分配（只记录user->...->LLM的真实路径）
+        user_to_llm_path = path[1:-1]
         allocations.append(
-            (best_user, best_llm, best_path, best_bottleneck, best_cost))
-        total_cost += best_cost
-        served_flow += best_bottleneck
+            (user_id, llm_id, user_to_llm_path, bottleneck, path_cost))
+        total_cost += path_cost
+        served_flow += bottleneck
 
     acceptance_ratio = served_flow / total_demand if total_demand > 0 else 0.0
 
@@ -1163,12 +1083,11 @@ def bottleneck_split_augment(network, users: Dict, llms: Dict,
 def one_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
               **kwargs) -> Dict[str, Any]:
     """
-    1-split算法（带汇集图）
+    1-split算法（汇集图版本）
 
     策略：
     - 利用汇集图结构（S→users→network→LLMs→T）
-    - 每轮对所有未完全分配用户，结合user_ideal_llms，计算到每个候选LLM的路径成本
-    - 选择造成总成本增加最小的(用户,LLM)对进行分配
+    - 每轮直接从S到T找最短路径（Dijkstra，不考虑反向边）
     - 推流粒度固定为1
     - 允许用户流量分流到不同LLM
     """
@@ -1205,137 +1124,56 @@ def one_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
     cumulative_flow = 0.0
     round_num = 0
 
-    # 记录每个用户剩余流量
-    user_remaining = {uid: user.bw for uid, user in users.items()}
-
     while True:
-        # 每轮对所有(用户,LLM)对计算路径成本，选择最小的
-        best_cost = float('inf')
-        best_user = None
-        best_llm = None
-        best_path = None
-        best_path_links = None
+        # 直接从S到T找最短路径（Dijkstra，只考虑正向边）
+        dist, prev = net.dijkstra_with_capacity(S, 1, target_id=T)
 
-        for uid, user in users.items():
-            if user_remaining[uid] <= 1e-9:
-                continue
-
-            remaining = user_remaining[uid]
-
-            # 结合user_ideal_llms，只考虑该用户的候选LLM
-            ideal_llms = user_ideal_llms.get(uid, {})
-            if not ideal_llms:
-                candidate_llms = list(llms_copy.keys())
-            else:
-                candidate_llms = [
-                    lid for lid, _ in sorted(ideal_llms.items(),
-                                             key=lambda x: x[1])
-                ]
-
-            for lid in candidate_llms:
-                if lid not in llms_copy:
-                    continue
-
-                # 检查LLM容量
-                if is_shared and llms_copy[lid].service_capacity <= 1e-9:
-                    continue
-
-                # 从用户到LLM的最短路径
-                dist, prev = net.dijkstra_with_capacity(uid, 1, target_id=lid)
-
-                if dist[lid] >= float('inf'):
-                    continue
-
-                # 重建路径
-                path = net.get_path(prev, uid, lid)
-                if not path:
-                    continue
-
-                path_links = []
-                bottleneck = float('inf')
-                for i in range(len(path) - 1):
-                    src, dst = path[i], path[i + 1]
-                    for link in net.links.get(src, []):
-                        if link.dst == dst and not link.is_reverse:
-                            path_links.append(link)
-                            bottleneck = min(bottleneck,
-                                             link.residual_capacity)
-                            break
-
-                # 检查S→user边的容量
-                for link in net.links.get(S, []):
-                    if link.dst == uid and not link.is_reverse:
-                        bottleneck = min(bottleneck, link.residual_capacity)
-                        break
-
-                # 检查LLM→T边的容量
-                for link in net.links.get(lid, []):
-                    if link.dst == T and not link.is_reverse:
-                        bottleneck = min(bottleneck, link.residual_capacity)
-                        break
-
-                # 推流粒度为1
-                push_flow = min(1, bottleneck, remaining)
-                if is_shared:
-                    push_flow = min(push_flow, llms_copy[lid].service_capacity)
-
-                if push_flow <= 1e-9:
-                    continue
-
-                # 计算成本（user->...->LLM的真实路径成本）
-                path_cost = sum(link.distance
-                                for link in path_links) * push_flow
-
-                # 选择成本最小的
-                if path_cost < best_cost:
-                    best_cost = path_cost
-                    best_user = uid
-                    best_llm = lid
-                    best_path = path
-                    best_path_links = path_links
-
-        # 如果没有找到可行路径，结束
-        if best_user is None:
+        if dist[T] >= float('inf'):
             break
 
-        # 推流量固定为1（或更小）
-        push_flow = min(1, user_remaining[best_user])
-        if is_shared:
-            push_flow = min(push_flow, llms_copy[best_llm].service_capacity)
+        # 重建路径
+        path = net.get_path(prev, S, T)
+        if len(path) < 4:  # 至少需要 S->user->...->LLM->T
+            break
 
+        # 提取user和LLM
+        user_id = path[1]  # S后第一个节点是user
+        llm_id = path[-2]  # T前最后一个节点是LLM
+
+        # 验证
+        if user_id not in users or llm_id not in llms_copy:
+            break
+
+        # 重建路径上的边，计算瓶颈容量
+        path_links = []
+        bottleneck = float('inf')
+        for i in range(len(path) - 1):
+            src, dst = path[i], path[i + 1]
+            for link in net.links.get(src, []):
+                if link.dst == dst and not link.is_reverse:
+                    path_links.append(link)
+                    bottleneck = min(bottleneck, link.residual_capacity)
+                    break
+
+        # 推流粒度为1
+        push_flow = min(1, bottleneck)
         if push_flow <= 1e-9:
             break
 
-        # 构建完整路径：S->user->...->LLM->T
-        s_to_user_link = None
-        for link in net.links[S]:
-            if link.dst == best_user and not link.is_reverse:
-                s_to_user_link = link
-                break
-
-        llm_to_t_link = None
-        for link in net.links[best_llm]:
-            if link.dst == T and not link.is_reverse:
-                llm_to_t_link = link
-                break
-
-        # 推送流量（完整路径）
-        full_path_links = [s_to_user_link] + best_path_links + [llm_to_t_link]
-        net.send_flow(full_path_links, push_flow)
-
-        # 更新用户剩余流量
-        user_remaining[best_user] -= push_flow
+        # 推送流量
+        net.send_flow(path_links, push_flow)
 
         # 更新LLM容量
         if is_shared:
-            llms_copy[best_llm].service_capacity -= push_flow
+            llms_copy[llm_id].service_capacity -= push_flow
 
-        # 重新计算成本（因为push_flow可能不同）
-        path_cost = sum(link.distance for link in best_path_links) * push_flow
+        # 计算成本（排除S->user和LLM->T的虚拟边）
+        path_cost = sum(link.distance for link in path_links[1:-1]) * push_flow
 
         # 记录分配（只记录user->...->LLM的真实路径）
+        user_to_llm_path = path[1:-1]
         allocations.append(
-            (best_user, best_llm, best_path, push_flow, path_cost))
+            (user_id, llm_id, user_to_llm_path, push_flow, path_cost))
         total_cost += path_cost
         served_flow += push_flow
 
@@ -1351,7 +1189,7 @@ def one_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
             'round_cost': path_cost,
             'cumulative_cost': cumulative_cost,
             'cumulative_flow': cumulative_flow,
-            'path': best_path
+            'path': user_to_llm_path
         })
 
     acceptance_ratio = served_flow / total_demand if total_demand > 0 else 0.0
@@ -1565,6 +1403,369 @@ def one_split_augment(network, users: Dict, llms: Dict,
     }
 
 
+def NW_bottleneck_split_augment(network, users: Dict, llms: Dict,
+                                  **kwargs) -> Dict[str, Any]:
+    """
+    瓶颈分流增广算法（不允许LLM反向边版本）
+
+    NW = No Withdraw
+    策略：与bottleneck_split_augment相同，但删除LLM的所有反向残余边
+    """
+    is_shared = kwargs.get('is_shared', True)
+    epsilon_cost = kwargs.get('epsilon_cost', 1e-9)
+
+    net = copy.deepcopy(network)
+    llms_copy = copy.deepcopy(llms)
+
+    # NW版本：删除LLM节点的所有边（都是反向残余边）
+    for llm_id in llms_copy.keys():
+        if llm_id in net.links:
+            net.links[llm_id] = []
+
+    # 创建超级源点S和超级汇点T
+    S = -1
+    T = -2
+    import Entity
+    net.add_node(Entity.Node(S, 0, 0))
+    net.add_node(Entity.Node(T, 0, 0))
+
+    # 连接S到所有用户（单向边）
+    for uid, user in users.items():
+        net.add_one_way_link(S, uid, user.bw, epsilon_cost)
+
+    # 连接所有LLM到T（单向边）
+    for lid, llm in llms_copy.items():
+        capacity = llm.service_capacity if is_shared else float('inf')
+        net.add_one_way_link(lid, T, capacity, epsilon_cost)
+
+    total_demand = sum(u.bw for u in users.values())
+
+    # 记录每一轮的推流状态
+    round_allocations = []
+    cumulative_cost = 0.0
+    cumulative_flow = 0.0
+    round_num = 0
+
+    # 定义 SPFA 查找增广路径（在残量网络上，含反向边）
+    def find_augmenting_path_spfa(source, sink):
+        """
+        使用 SPFA 在残量网络上查找最短增广路径
+
+        返回:
+            (dist, prev_with_links) 其中 prev_with_links[v] = (u, link)
+        """
+        from collections import deque
+
+        dist = {nid: float('inf') for nid in net.nodes}
+        prev = {nid: None for nid in net.nodes}
+        in_queue = {nid: False for nid in net.nodes}
+
+        dist[source] = 0
+        queue = deque([source])
+        in_queue[source] = True
+
+        while queue:
+            u = queue.popleft()
+            in_queue[u] = False
+
+            for link in net.links.get(u, []):
+                # 检查残余容量
+                if link.residual_capacity < 1e-9:
+                    continue
+
+                v = link.dst
+                # 计算成本：反向边使用负成本
+                cost = link.distance if not link.is_reverse else -link.reverse.distance
+
+                if dist[u] + cost < dist[v] - 1e-9:
+                    dist[v] = dist[u] + cost
+                    prev[v] = (u, link)  # 记录边对象！
+
+                    if not in_queue[v]:
+                        queue.append(v)
+                        in_queue[v] = True
+
+        return dist, prev
+
+    # 循环增广
+    while True:
+        # 消除负环
+        net.cancel_negative_cycles()
+
+        # 使用 SPFA 查找增广路径（含反向边）
+        dist, prev = find_augmenting_path_spfa(S, T)
+
+        if dist[T] >= float('inf'):
+            break
+
+        # 提取路径：使用记录的边对象
+        path_links = []
+        path_nodes = []
+        cur = T
+        while cur != S:
+            if prev[cur] is None:
+                break  # 路径不完整
+            prev_node, prev_link = prev[cur]
+            path_links.append(prev_link)
+            path_nodes.append(cur)
+            cur = prev_node
+
+        path_nodes.append(S)
+        path_nodes.reverse()
+        path_links.reverse()
+
+        # 计算瓶颈容量
+        bottleneck = min(link.residual_capacity for link in path_links)
+
+        if bottleneck < 1e-9:
+            break
+
+        # 推送流量
+        net.send_flow(path_links, bottleneck)
+
+        # 计算本轮实际成本（排除 S->user 和 LLM->T 的虚拟边）
+        round_cost = 0.0
+        for i, link in enumerate(path_links):
+            if i == 0 or i == len(path_links) - 1:  # 跳过第一条和最后一条
+                continue
+            # 正向边加成本，反向边减成本（因为反向边是回收流量）
+            if not link.is_reverse:
+                round_cost += link.distance * bottleneck
+            else:
+                round_cost -= link.reverse.distance * bottleneck
+
+        cumulative_cost += round_cost
+        cumulative_flow += bottleneck
+        round_num += 1
+
+        # 记录本轮状态（包含 user_id 和 llm_id）
+        path_without_st = path_nodes[1:-1]  # 去掉 S 和 T
+        user_id = path_without_st[0] if path_without_st else None
+        llm_id = path_without_st[-1] if path_without_st else None
+
+        round_allocations.append({
+            'round': round_num,
+            'push_flow': bottleneck,
+            'round_cost': round_cost,
+            'cumulative_cost': cumulative_cost,
+            'cumulative_flow': cumulative_flow,
+            'path': path_without_st,
+            'user_id': user_id,
+            'llm_id': llm_id
+        })
+
+    # 直接从 round_allocations 生成 allocations（不使用 _trace_user_flow_bfs）
+    allocations = []
+    for ra in round_allocations:
+        if ra['user_id'] is not None and ra['llm_id'] is not None:
+            allocations.append((
+                ra['user_id'],
+                ra['llm_id'],
+                ra['path'],
+                ra['push_flow'],
+                ra['round_cost']
+            ))
+
+    # 计算最终总成本和服务流量
+    total_cost = cumulative_cost
+    served_flow = cumulative_flow
+
+    acceptance_ratio = served_flow / total_demand if total_demand > 0 else 0.0
+
+    return {
+        'allocations': allocations,
+        'total_cost': total_cost,
+        'round_allocations': round_allocations,
+        'total_flow': total_demand,
+        'served_flow': served_flow,
+        'acceptance_ratio': acceptance_ratio,
+        'network': net
+    }
+
+
+def NW_one_split_augment(network, users: Dict, llms: Dict,
+                          **kwargs) -> Dict[str, Any]:
+    """
+    1-split增广算法（不允许LLM反向边版本）
+
+    NW = No Withdraw
+    策略：与one_split_augment相同，但删除LLM的所有反向残余边
+    """
+    is_shared = kwargs.get('is_shared', True)
+    epsilon_cost = kwargs.get('epsilon_cost', 1e-9)
+
+    net = copy.deepcopy(network)
+    llms_copy = copy.deepcopy(llms)
+
+    # NW版本：删除LLM节点的所有边（都是反向残余边）
+    for llm_id in llms_copy.keys():
+        if llm_id in net.links:
+            net.links[llm_id] = []
+
+    # 创建超级源点S和超级汇点T
+    S = -1
+    T = -2
+    import Entity
+    net.add_node(Entity.Node(S, 0, 0))
+    net.add_node(Entity.Node(T, 0, 0))
+
+    # 连接S到所有用户（单向边）
+    for uid, user in users.items():
+        net.add_one_way_link(S, uid, user.bw, epsilon_cost)
+
+    # 连接所有LLM到T（单向边）
+    for lid, llm in llms_copy.items():
+        capacity = llm.service_capacity if is_shared else float('inf')
+        net.add_one_way_link(lid, T, capacity, epsilon_cost)
+
+    total_demand = sum(u.bw for u in users.values())
+
+    # 记录每一轮的推流状态
+    round_allocations = []
+    cumulative_cost = 0.0
+    cumulative_flow = 0.0
+    round_num = 0
+
+    # 定义 SPFA 查找增广路径（在残量网络上，含反向边）
+    def find_augmenting_path_spfa(source, sink):
+        """
+        使用 SPFA 在残量网络上查找最短增广路径
+
+        返回:
+            (dist, prev_with_links) 其中 prev_with_links[v] = (u, link)
+        """
+        from collections import deque
+
+        dist = {nid: float('inf') for nid in net.nodes}
+        prev = {nid: None for nid in net.nodes}
+        in_queue = {nid: False for nid in net.nodes}
+
+        dist[source] = 0
+        queue = deque([source])
+        in_queue[source] = True
+
+        while queue:
+            u = queue.popleft()
+            in_queue[u] = False
+
+            for link in net.links.get(u, []):
+                # 检查残余容量
+                if link.residual_capacity < 1e-9:
+                    continue
+
+                v = link.dst
+                # 计算成本：反向边使用负成本
+                cost = link.distance if not link.is_reverse else -link.reverse.distance
+
+                if dist[u] + cost < dist[v] - 1e-9:
+                    dist[v] = dist[u] + cost
+                    prev[v] = (u, link)  # 记录边对象！
+
+                    if not in_queue[v]:
+                        queue.append(v)
+                        in_queue[v] = True
+
+        return dist, prev
+
+    # 循环增广，每次推流粒度为1
+    while True:
+        # 消除负环
+        net.cancel_negative_cycles()
+
+        # 使用 SPFA 查找增广路径（含反向边）
+        dist, prev = find_augmenting_path_spfa(S, T)
+
+        if dist[T] >= float('inf'):
+            break
+
+        # 提取路径：使用记录的边对象
+        path_links = []
+        path_nodes = []
+        cur = T
+        while cur != S:
+            if prev[cur] is None:
+                break  # 路径不完整
+            prev_node, prev_link = prev[cur]
+            path_links.append(prev_link)
+            path_nodes.append(cur)
+            cur = prev_node
+
+        path_nodes.append(S)
+        path_nodes.reverse()
+        path_links.reverse()
+
+        # 计算瓶颈容量
+        bottleneck = min(link.residual_capacity for link in path_links)
+
+        # 推流粒度为1
+        push_flow = min(1, bottleneck)
+
+        if push_flow < 1e-9:
+            break
+
+        # 推送流量
+        net.send_flow(path_links, push_flow)
+
+        # 计算本轮实际成本（排除 S->user 和 LLM->T 的虚拟边）
+        round_cost = 0.0
+        for i, link in enumerate(path_links):
+            if i == 0 or i == len(path_links) - 1:  # 跳过第一条和最后一条
+                continue
+            # 正向边加成本，反向边减成本（因为反向边是回收流量）
+            if not link.is_reverse:
+                round_cost += link.distance * push_flow
+            else:
+                round_cost -= link.reverse.distance * push_flow
+
+        cumulative_cost += round_cost
+        cumulative_flow += push_flow
+        round_num += 1
+
+        # 记录本轮状态（包含 user_id 和 llm_id）
+        path_without_st = path_nodes[1:-1]  # 去掉 S 和 T
+        user_id = path_without_st[0] if path_without_st else None
+        llm_id = path_without_st[-1] if path_without_st else None
+
+        round_allocations.append({
+            'round': round_num,
+            'push_flow': push_flow,
+            'round_cost': round_cost,
+            'cumulative_cost': cumulative_cost,
+            'cumulative_flow': cumulative_flow,
+            'path': path_without_st,
+            'user_id': user_id,
+            'llm_id': llm_id
+        })
+
+    # 直接从 round_allocations 生成 allocations（不使用 _trace_user_flow_bfs）
+    allocations = []
+    for ra in round_allocations:
+        if ra['user_id'] is not None and ra['llm_id'] is not None:
+            allocations.append((
+                ra['user_id'],
+                ra['llm_id'],
+                ra['path'],
+                ra['push_flow'],
+                ra['round_cost']
+            ))
+
+    # 计算最终总成本和服务流量
+    total_cost = cumulative_cost
+    served_flow = cumulative_flow
+
+    acceptance_ratio = served_flow / total_demand if total_demand > 0 else 0.0
+
+    return {
+        'allocations': allocations,
+        'total_cost': total_cost,
+        'round_allocations': round_allocations,
+        'total_flow': total_demand,
+        'served_flow': served_flow,
+        'acceptance_ratio': acceptance_ratio,
+        'network': net
+    }
+
+
 # 算法注册表
 ALGORITHMS = {
     'no-split': no_split,
@@ -1577,6 +1778,8 @@ ALGORITHMS = {
     '1-split': one_split,
     '1-split-no-aggregate': one_split_no_aggregate,
     '1-split-augment': one_split_augment,
+    'NW-bottleneck-split-augment': NW_bottleneck_split_augment,
+    'NW-1-split-augment': NW_one_split_augment,
 }
 
 

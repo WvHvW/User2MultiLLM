@@ -66,6 +66,14 @@ ALGORITHMS = [
         'name': 'bottleneck-split-augment',
         'need_ideal': False
     },
+    {
+        'name': 'NW-1-split-augment',
+        'need_ideal': False
+    },
+    {
+        'name': 'NW-bottleneck-split-augment',
+        'need_ideal': False
+    },
 ]
 
 
@@ -248,7 +256,8 @@ def run_single_experiment(network, users: Dict, llms: Dict,
     net_copy = copy.deepcopy(network)
 
     # 计时开始（包括BFS重建和消除负环的时间）
-    start_time = time.time()
+    # 使用perf_counter提供纳秒级精度
+    start_time = time.perf_counter()
 
     # 运行算法（只运行一次）
     try:
@@ -270,7 +279,7 @@ def run_single_experiment(network, users: Dict, llms: Dict,
         return None
 
     # 计时结束
-    end_time = time.time()
+    end_time = time.perf_counter()
     runtime = end_time - start_time
 
     # 提取基本指标
