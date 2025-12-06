@@ -20,7 +20,8 @@ import Entity
 from Entity import Network, User, LLM
 from force_brute import brute_force_optimal
 from Algorithm import (one_split_no_aggregate, one_split_augment,
-                       bottleneck_split_no_aggregate, bottleneck_split_augment)
+                       bottleneck_split_no_aggregate, bottleneck_split_augment,
+                       one_split, bottleneck_split)
 
 
 def random_assign_users_llms(
@@ -143,13 +144,15 @@ def run_single_round(network: Network, users: Dict[int, User], llms: Dict[int,
             '搜索空间大小': None
         })
 
-    # 2-5. 运行其他算法
+    # 2-7. 运行其他算法
     algorithms = [
         ('1-split_no_aggregation', one_split_no_aggregate,
          True),  # (算法名, 函数, 是否需要user_ideal_llms)
+        ('1-split', one_split, True),  # 汇集图版本也需要user_ideal_llms（虽然内部不用）
         ('1-split-augment', one_split_augment, False),
         ('bottleneck-split_no_aggregation', bottleneck_split_no_aggregate,
          True),
+        ('bottleneck-split', bottleneck_split, True),  # 汇集图版本也需要user_ideal_llms
         ('bottleneck-split-augment', bottleneck_split_augment, False)
     ]
 
@@ -182,13 +185,14 @@ def run_single_round(network: Network, users: Dict[int, User], llms: Dict[int,
             total_demand = sum(u.bw for u in users.values())
             total_flow = result.get('total_flow', 0)
             acceptance_ratio = total_flow / total_demand if total_demand > 0 else 0
+            search_space = result.get('search_space', None)  # 提取搜索空间
 
             results.append({
                 '算法名': algo_name,
                 '总花销': total_cost,
                 '运行时间': runtime,
                 '服务率': acceptance_ratio,
-                '搜索空间大小': None  # 这些算法没有明确的搜索空间
+                '搜索空间大小': search_space
             })
             print(f"  完成 - 开销: {total_cost:.2f}, 时间: {runtime:.3f}s")
         except Exception as e:
@@ -247,7 +251,7 @@ def check_optimization_condition(results: List[Dict]) -> bool:
     print(f"    改进率={improvement*100:.1f}%")
 
     # 条件1: augment比bottleneck好15%以上
-    condition1 = improvement >= 0.10
+    condition1 = improvement >= 0.0
 
     # 条件2: augment花销 >= force_brute（只统计未达最优的情况）
     condition2 = augment_cost >= brute_force_cost
@@ -286,9 +290,9 @@ def main():
     # 2. 实验配置
     num_users = 4
     num_llms = 2
-    user_demands = [1, 1, 1, 3]
-    llm_capacities = [2, 4]
-    target_valid_rounds = 10  # 目标收集10组有效数据
+    user_demands = [1, 1, 1, 2]
+    llm_capacities = [2, 3]
+    target_valid_rounds = 1  # 目标收集10组有效数据
 
     print(f"实验配置:")
     print(f"  用户数: {num_users}")

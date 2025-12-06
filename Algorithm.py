@@ -370,6 +370,7 @@ def bottleneck_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
     total_cost = 0.0
     total_demand = sum(u.bw for u in users.values())
     served_flow = 0.0
+    search_space = 0  # 记录推流次数
 
     while True:
         # 直接从S到T找最短路径（Dijkstra，只考虑正向边）
@@ -407,6 +408,7 @@ def bottleneck_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
 
         # 推送流量
         net.send_flow(path_links, bottleneck)
+        search_space += 1  # 每次推流计数
 
         # 更新LLM容量
         if is_shared:
@@ -430,6 +432,7 @@ def bottleneck_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
         'total_flow': total_demand,
         'served_flow': served_flow,
         'acceptance_ratio': acceptance_ratio,
+        'search_space': search_space,
         'network': net
     }
 
@@ -464,6 +467,7 @@ def bottleneck_split_no_aggregate(network, users: Dict, llms: Dict,
     total_cost = 0.0
     total_demand = sum(u.bw for u in users.values())
     served_flow = 0.0
+    search_space = 0  # 记录尝试路由的次数
 
     # 按用户流量需求降序排序处理
     sorted_users = sorted(users.items(), key=lambda x: x[1].bw, reverse=True)
@@ -492,6 +496,7 @@ def bottleneck_split_no_aggregate(network, users: Dict, llms: Dict,
             dist, prev = net.dijkstra_with_capacity(uid,
                                                     min_capacity=1,
                                                     target_id=lid)
+            search_space += 1  # 每次尝试路由计数
 
             if dist[lid] < float('inf'):
                 path = net.get_path(prev, uid, lid)
@@ -536,6 +541,7 @@ def bottleneck_split_no_aggregate(network, users: Dict, llms: Dict,
         'total_flow': total_demand,
         'served_flow': served_flow,
         'acceptance_ratio': acceptance_ratio,
+        'search_space': search_space,
         'network': net
     }
 
@@ -569,6 +575,7 @@ def one_split_no_aggregate(network, users: Dict, llms: Dict,
     total_cost = 0.0
     total_demand = sum(u.bw for u in users.values())
     served_flow = 0.0
+    search_space = 0  # 记录尝试路由的次数
 
     # 记录每一轮的推流状态
     round_allocations = []
@@ -633,6 +640,7 @@ def one_split_no_aggregate(network, users: Dict, llms: Dict,
                         break  # 路径饱和，尝试下一个LLM
 
                     net.send_flow(path_links, push_flow)
+                    search_space += 1  # 每次推流计数
 
                     if is_shared:
                         llms_copy[lid].service_capacity -= push_flow
@@ -668,6 +676,7 @@ def one_split_no_aggregate(network, users: Dict, llms: Dict,
         'total_flow': total_demand,
         'served_flow': served_flow,
         'acceptance_ratio': acceptance_ratio,
+        'search_space': search_space,
         'network': net
     }
 
@@ -953,6 +962,7 @@ def bottleneck_split_augment(network, users: Dict, llms: Dict,
     cumulative_cost = 0.0
     cumulative_flow = 0.0
     round_num = 0
+    search_space = 0  # 记录SPFA调用次数
 
     # 定义 SPFA 查找增广路径（在残量网络上，含反向边）
     def find_augmenting_path_spfa(source, sink):
@@ -1030,6 +1040,7 @@ def bottleneck_split_augment(network, users: Dict, llms: Dict,
 
         # 推送流量
         net.send_flow(path_links, bottleneck)
+        search_space += 1  # 每次推流计数
 
         # 计算本轮实际成本（排除 S->user 和 LLM->T 的虚拟边）
         round_cost = 0.0
@@ -1076,6 +1087,7 @@ def bottleneck_split_augment(network, users: Dict, llms: Dict,
         'total_flow': total_demand,
         'served_flow': served_flow,
         'acceptance_ratio': acceptance_ratio,
+        'search_space': search_space,
         'network': net
     }
 
@@ -1117,6 +1129,7 @@ def one_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
     total_cost = 0.0
     total_demand = sum(u.bw for u in users.values())
     served_flow = 0.0
+    search_space = 0  # 记录Dijkstra调用次数
 
     # 记录每一轮的推流状态
     round_allocations = []
@@ -1162,6 +1175,7 @@ def one_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
 
         # 推送流量
         net.send_flow(path_links, push_flow)
+        search_space += 1  # 每次推流计数
 
         # 更新LLM容量
         if is_shared:
@@ -1201,6 +1215,7 @@ def one_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
         'total_flow': total_demand,
         'served_flow': served_flow,
         'acceptance_ratio': acceptance_ratio,
+        'search_space': search_space,
         'network': net
     }
 
@@ -1273,6 +1288,7 @@ def one_split_augment(network, users: Dict, llms: Dict,
     cumulative_cost = 0.0
     cumulative_flow = 0.0
     round_num = 0
+    search_space = 0  # 记录SPFA调用次数
 
     # 定义 SPFA 查找增广路径（在残量网络上，含反向边）
     def find_augmenting_path_spfa(source, sink):
@@ -1353,6 +1369,7 @@ def one_split_augment(network, users: Dict, llms: Dict,
 
         # 推送流量
         net.send_flow(path_links, push_flow)
+        search_space += 1  # 每次推流计数
 
         # 计算本轮实际成本（排除 S->user 和 LLM->T 的虚拟边）
         round_cost = 0.0
@@ -1399,6 +1416,7 @@ def one_split_augment(network, users: Dict, llms: Dict,
         'total_flow': total_demand,
         'served_flow': served_flow,
         'acceptance_ratio': acceptance_ratio,
+        'search_space': search_space,
         'network': net
     }
 
