@@ -99,3 +99,11 @@
    1. “N-xxx-results.xlsx”，第一列是带宽设置，第二列是LLM服务容量设置，第三列是user分布，第四列是llm分布，第五列是算法名，往后是各个记录字段。这个文件保存在results/N-xxx目录下
    2. “N-size-results.xlsx”，sheet名为对应的user_distribution-llm_distribution，第一列是带宽设置，第二列是LLM服务容量设置，第三列是网络节点个数，第四列是算法名，第五列是运行时间，第六列是总花销，第七列是服务率。这个文件保存在results目录下即可
    3. 记录1-split、1-split-no-aggregate和1-split-augment的结果，名为“withdraw-optimization.xlsx”，sheet名为对应的user_distribution-llm_distribution，第一列是带宽设置，第二列是LLM服务容量设置，第三列是1-split-no-aggregate算法名，第四列是1-split算法名，第五列是1-split-augment算法名，第六列是迭代次数，第七列是1-split-no-aggregate截至当前轮次总花销，第八列是1-split截至当前轮次总花销，第九列是1-split-augment截至当前轮次总花销。这个文件保存在results/N-xxx目录下
+
+# 暴力算法实验设计
+1. 为每一单位流量枚举去处
+2. 网络信息从sheets/N-opt读取，不用读取distribution，每轮随机分配user和llm的位置，注意llm所在节点要去掉物理出边
+3. 要比较的有force_brute、1-spilt、1-split-augment、bottle-split、bottle-split-augment
+4. 结果保存到results/opt/force_baseline.xlsx里，第一列是算法名，第二列是总花销，第三列是运行时间，第四列是服务率，第五列是搜索空间大小
+5. 只记录bottle-split-augment开销比bottle-split开销小20%以上的数据，记录够10组结束
+6. 不同轮次数据间空一行

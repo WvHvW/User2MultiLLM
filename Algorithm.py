@@ -488,9 +488,9 @@ def bottleneck_split_no_aggregate(network, users: Dict, llms: Dict,
             if is_shared and llms_copy[lid].service_capacity < 1e-9:
                 continue
 
-            # 使用Dijkstra找路径
+            # 使用Dijkstra找路径（min_capacity=1，只需要找到可用路径）
             dist, prev = net.dijkstra_with_capacity(uid,
-                                                    remaining,
+                                                    min_capacity=1,
                                                     target_id=lid)
 
             if dist[lid] < float('inf'):
@@ -599,9 +599,9 @@ def one_split_no_aggregate(network, users: Dict, llms: Dict,
             if is_shared and llms_copy[lid].service_capacity < 1e-9:
                 continue
 
-            # 找一次路径（和bottleneck-split-no-aggregate一样）
+            # 找一次路径（min_capacity=1，只需要找到可用路径）
             dist, prev = net.dijkstra_with_capacity(uid,
-                                                    remaining,
+                                                    min_capacity=1,
                                                     target_id=lid)
 
             if dist[lid] < float('inf'):
