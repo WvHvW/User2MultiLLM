@@ -113,24 +113,23 @@ def run_single_round(network: Network, users: Dict[int, User], llms: Dict[int,
     print("运行 force_brute...")
     start_time = time.perf_counter()
     try:
-        best_cost, best_solution, total_search_space = brute_force_optimal(
+        best_cost, best_solution, total_search_space, served_flow = brute_force_optimal(
             network, users, llms)
         runtime = time.perf_counter() - start_time
 
         # 计算服务率
         total_demand = sum(u.bw for u in users.values())
-        # 对于force_brute，如果找到解，服务率就是100%
-        acceptance_ratio = 1.0 if best_cost < float('inf') else 0.0
+        acceptance_ratio = served_flow / total_demand if total_demand > 0 else 0.0
 
         results.append({
             '算法名': 'force_brute',
-            '总花销': best_cost if best_cost < float('inf') else None,
+            '总花销': best_cost,
             '运行时间': runtime,
             '服务率': acceptance_ratio,
             '搜索空间大小': total_search_space
         })
         print(
-            f"  完成 - 开销: {best_cost:.2f}, 时间: {runtime:.3f}s, 搜索空间: {total_search_space:,}"
+            f"  完成 - 开销: {best_cost:.2f}, 时间: {runtime:.3f}s, 服务率: {acceptance_ratio*100:.1f}%, 搜索空间: {total_search_space:,}"
         )
     except Exception as e:
         print(f"  失败: {e}")
@@ -152,7 +151,8 @@ def run_single_round(network: Network, users: Dict[int, User], llms: Dict[int,
         ('1-split-augment', one_split_augment, False),
         ('bottleneck-split_no_aggregation', bottleneck_split_no_aggregate,
          True),
-        ('bottleneck-split', bottleneck_split, True),  # 汇集图版本也需要user_ideal_llms
+        ('bottleneck-split', bottleneck_split,
+         True),  # 汇集图版本也需要user_ideal_llms
         ('bottleneck-split-augment', bottleneck_split_augment, False)
     ]
 
@@ -251,7 +251,7 @@ def check_optimization_condition(results: List[Dict]) -> bool:
     print(f"    改进率={improvement*100:.1f}%")
 
     # 条件1: augment比bottleneck好15%以上
-    condition1 = improvement >= 0.0
+    condition1 = improvement >= 0.00
 
     # 条件2: augment花销 >= force_brute（只统计未达最优的情况）
     condition2 = augment_cost >= brute_force_cost
@@ -288,11 +288,11 @@ def main():
     print()
 
     # 2. 实验配置
-    num_users = 4
-    num_llms = 2
-    user_demands = [1, 1, 1, 2]
-    llm_capacities = [2, 3]
-    target_valid_rounds = 1  # 目标收集10组有效数据
+    num_users = 1
+    num_llms = 1
+    user_demands = [7]
+    llm_capacities = [7]
+    target_valid_rounds = 20  # 目标收集20组有效数据
 
     print(f"实验配置:")
     print(f"  用户数: {num_users}")

@@ -29,7 +29,7 @@ from Entity import load_network_from_sheets, load_user_info, load_llm_info, User
 
 
 def brute_force_optimal(network: Network, users: Dict[int, User],
-                        llms: Dict[int, LLM]) -> Tuple[float, List, int]:
+                        llms: Dict[int, LLM]) -> Tuple[float, List, int, float]:
     """
     真正的暴力枚举最优解（迭代式实现）
 
@@ -39,12 +39,14 @@ def brute_force_optimal(network: Network, users: Dict[int, User],
         llms: LLM字典
 
     Returns:
-        (最优开销, 最优解, 实际搜索空间)
+        (最优开销, 最优解, 实际搜索空间, 服务流量)
 
     算法：
         外层循环：枚举所有n!种流量单位的排列
         内层循环：对每种排列，枚举M^n种LLM分配
         路由过程：按排列顺序逐个路由每个流量单位
+
+    注意：即使LLM容量不足，也会返回部分服务的最优解
     """
     from math import factorial
 
@@ -66,16 +68,17 @@ def brute_force_optimal(network: Network, users: Dict[int, User],
     print(f"  LLM容量: {[int(llms[lid].service_capacity) for lid in llm_list]}")
     print(f"  理论搜索空间: {n}! × {M}^{n} = {factorial(n):,} × {M**n:,}")
     print(f"                = {factorial(n) * (M ** n):,}")
-    print(f"  优化: 分支定界 + LLM容量剪枝 + 链路容量剪枝")
+    print(f"  优化: 分支定界 + 链路容量剪枝")
     print()
 
     # 搜索状态
     best_cost = float('inf')
     best_solution = None
+    best_served_flow = 0  # 最优解的服务流量
     actual_search_space = 0
     pruned_by_cost = 0
-    pruned_by_llm_capacity = 0
     pruned_by_link_capacity = 0
+    skipped_by_llm_capacity = 0  # 因LLM容量不足跳过的流量单位
 
     total_orderings = factorial(n)
     total_allocations_per_ordering = M**n
@@ -102,7 +105,7 @@ def brute_force_optimal(network: Network, users: Dict[int, User],
                 for lid in llm_list
             }
             current_cost = 0.0
-            feasible = True
+            current_served = 0  # 当前方案实际服务的流量
 
             # 4. 按排列顺序逐个路由每个流量单位
             for order_pos in ordering:
@@ -110,11 +113,10 @@ def brute_force_optimal(network: Network, users: Dict[int, User],
                 user_id = flow_units[order_pos]
                 llm_id = allocation[order_pos]
 
-                # 剪枝1: LLM容量不足
+                # 检查LLM容量（不足时跳过该流量单位，继续尝试后续单位）
                 if llms_remaining[llm_id] < 1 - 1e-6:
-                    pruned_by_llm_capacity += 1
-                    feasible = False
-                    break
+                    skipped_by_llm_capacity += 1
+                    continue  # 跳过而不是break
 
                 # 使用Dijkstra找最短路径（考虑残余容量）
                 distances, previous_nodes = net.dijkstra_with_capacity(
@@ -122,11 +124,10 @@ def brute_force_optimal(network: Network, users: Dict[int, User],
                     min_capacity=1,  # 需要至少1单位容量
                     target_id=llm_id)
 
-                # 剪枝2: 无可达路径或链路容量不足
+                # 检查链路可达性（无路径时跳过）
                 if distances[llm_id] == float('inf'):
                     pruned_by_link_capacity += 1
-                    feasible = False
-                    break
+                    continue  # 跳过而不是break
 
                 # 获取路径
                 path_nodes, path_links = net.get_path_with_links(
@@ -136,22 +137,24 @@ def brute_force_optimal(network: Network, users: Dict[int, User],
                 for link in path_links:
                     link.flow += 1
 
-                # 累加开销
+                # 累加开销和服务流量
                 current_cost += distances[llm_id]
+                current_served += 1
                 llms_remaining[llm_id] -= 1
 
-                # 剪枝3: 分支定界
-                if current_cost >= best_cost:
+                # 剪枝: 分支定界（仅当服务流量相同时比较开销）
+                if current_served == best_served_flow and current_cost >= best_cost:
                     pruned_by_cost += 1
-                    feasible = False
                     break
 
-            # 计入实际搜索空间（完成所有路由或提前剪枝）
+            # 计入实际搜索空间
             actual_search_space += 1
 
-            # 更新最优解
-            if feasible and current_cost < best_cost:
+            # 更新最优解（优先选择服务流量更多的，其次选择开销更小的）
+            if (current_served > best_served_flow or
+                (current_served == best_served_flow and current_cost < best_cost)):
                 best_cost = current_cost
+                best_served_flow = current_served
                 best_solution = (ordering, allocation)
 
     print(f"\n搜索完成:")
@@ -159,11 +162,12 @@ def brute_force_optimal(network: Network, users: Dict[int, User],
     print(f"  理论搜索空间: {total_orderings * total_allocations_per_ordering:,}")
     print(f"  实际搜索空间: {actual_search_space:,}")
     print(f"  分支定界剪枝: {pruned_by_cost:,}")
-    print(f"  LLM容量剪枝: {pruned_by_llm_capacity:,}")
+    print(f"  LLM容量跳过: {skipped_by_llm_capacity:,}")
     print(f"  链路容量剪枝: {pruned_by_link_capacity:,}")
     print(f"  最优开销: {best_cost:.2f}")
+    print(f"  服务流量: {best_served_flow}/{n} ({best_served_flow/n*100:.1f}%)")
 
-    return best_cost, best_solution, actual_search_space
+    return best_cost, best_solution, actual_search_space, best_served_flow
 
 
 def format_solution(flow_units: List[int], solution: Tuple,

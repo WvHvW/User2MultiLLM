@@ -489,16 +489,20 @@ def bottleneck_split_no_aggregate(network, users: Dict, llms: Dict,
             if lid not in llms_copy:
                 continue
 
-            if is_shared and llms_copy[lid].service_capacity < 1e-9:
-                continue
+            # 对同一个LLM，重复寻路推流，直到无法找到新路径或需求满足
+            while remaining > 1e-9:
+                if is_shared and llms_copy[lid].service_capacity < 1e-9:
+                    break  # LLM容量耗尽
 
-            # 使用Dijkstra找路径（min_capacity=1，只需要找到可用路径）
-            dist, prev = net.dijkstra_with_capacity(uid,
-                                                    min_capacity=1,
-                                                    target_id=lid)
-            search_space += 1  # 每次尝试路由计数
+                # 使用Dijkstra找路径（min_capacity=1，只需要找到可用路径）
+                dist, prev = net.dijkstra_with_capacity(uid,
+                                                        min_capacity=1,
+                                                        target_id=lid)
+                search_space += 1  # 每次尝试路由计数
 
-            if dist[lid] < float('inf'):
+                if dist[lid] >= float('inf'):
+                    break  # 找不到可行路径，尝试下一个LLM
+
                 path = net.get_path(prev, uid, lid)
                 path_links = []
                 bottleneck = float('inf')
@@ -532,6 +536,8 @@ def bottleneck_split_no_aggregate(network, users: Dict, llms: Dict,
                     total_cost += path_cost
                     served_flow += push_flow
                     remaining -= push_flow
+                else:
+                    break  # 推流量为0，说明路径已饱和
 
     acceptance_ratio = served_flow / total_demand if total_demand > 0 else 0.0
 
