@@ -18,7 +18,7 @@ import Entity
 import Algorithm
 
 # 实验配置
-NETWORK_SIZES = [20]
+NETWORK_SIZES = [20, 40, 60, 80, 100, 200, 300, 400]
 NETWORK_BANDWIDTHS = [50, 75, 100, 200, 400]  # 全网络带宽（Gbps）
 LLM_CAPACITIES_MEDIUM = [80, 100, 150, 200]  # 中等规模LLM容量（Gbps）
 LLM_CAPACITIES_LARGE = [250, 300, 400, 500]  # 大规模LLM容量（Gbps）
@@ -50,30 +50,30 @@ ALGORITHMS = [
         'name': 'bottleneck-split-no-aggregate',
         'need_ideal': True
     },
-    {
-        'name': 'LLM-split-aggregate',
-        'need_ideal': True
-    },
-    {
-        'name': 'LLM-split',
-        'need_ideal': True
-    },
-    {
-        'name': '1-split-augment',
-        'need_ideal': False
-    },
+    # {
+    #     'name': 'LLM-split-aggregate',
+    #     'need_ideal': True
+    # },
+    # {
+    #     'name': 'LLM-split',
+    #     'need_ideal': True
+    # },
+    # {
+    #     'name': '1-split-augment',
+    #     'need_ideal': False
+    # },
     {
         'name': 'bottleneck-split-augment',
         'need_ideal': False
     },
-    {
-        'name': 'NW-1-split-augment',
-        'need_ideal': False
-    },
-    {
-        'name': 'NW-bottleneck-split-augment',
-        'need_ideal': False
-    },
+    # {
+    #     'name': 'NW-1-split-augment',
+    #     'need_ideal': False
+    # },
+    # {
+    #     'name': 'NW-bottleneck-split-augment',
+    #     'need_ideal': False
+    # },
 ]
 
 

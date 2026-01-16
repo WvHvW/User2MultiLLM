@@ -200,7 +200,7 @@ def no_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
     return {
         'allocations': allocations,
         'total_cost': total_cost,
-        'total_flow': total_demand,
+        'total_flow': served_flow,
         'served_flow': served_flow,
         'acceptance_ratio': acceptance_ratio,
         'network': net
@@ -326,7 +326,7 @@ def no_split_aggregate(network, users: Dict, llms: Dict,
     return {
         'allocations': allocations,
         'total_cost': total_cost,
-        'total_flow': total_demand,
+        'total_flow': served_flow,
         'served_flow': served_flow,
         'acceptance_ratio': acceptance_ratio,
         'network': net
@@ -415,7 +415,8 @@ def bottleneck_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
             llms_copy[llm_id].service_capacity -= bottleneck
 
         # 计算成本（排除S->user和LLM->T的虚拟边）
-        path_cost = sum(link.distance for link in path_links[1:-1]) * bottleneck
+        path_cost = sum(link.distance
+                        for link in path_links[1:-1]) * bottleneck
 
         # 记录分配（只记录user->...->LLM的真实路径）
         user_to_llm_path = path[1:-1]
@@ -429,7 +430,7 @@ def bottleneck_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
     return {
         'allocations': allocations,
         'total_cost': total_cost,
-        'total_flow': total_demand,
+        'total_flow': served_flow,
         'served_flow': served_flow,
         'acceptance_ratio': acceptance_ratio,
         'search_space': search_space,
@@ -544,7 +545,7 @@ def bottleneck_split_no_aggregate(network, users: Dict, llms: Dict,
     return {
         'allocations': allocations,
         'total_cost': total_cost,
-        'total_flow': total_demand,
+        'total_flow': served_flow,
         'served_flow': served_flow,
         'acceptance_ratio': acceptance_ratio,
         'search_space': search_space,
@@ -679,7 +680,7 @@ def one_split_no_aggregate(network, users: Dict, llms: Dict,
         'allocations': allocations,
         'total_cost': total_cost,
         'round_allocations': round_allocations,
-        'total_flow': total_demand,
+        'total_flow': served_flow,
         'served_flow': served_flow,
         'acceptance_ratio': acceptance_ratio,
         'search_space': search_space,
@@ -784,7 +785,7 @@ def LLM_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
     return {
         'allocations': allocations,
         'total_cost': total_cost,
-        'total_flow': total_demand,
+        'total_flow': served_flow,
         'served_flow': served_flow,
         'acceptance_ratio': acceptance_ratio,
         'network': net
@@ -927,7 +928,7 @@ def LLM_split_aggregate(network, users: Dict, llms: Dict,
     return {
         'allocations': allocations,
         'total_cost': total_cost,
-        'total_flow': total_demand,
+        'total_flow': served_flow,
         'served_flow': served_flow,
         'acceptance_ratio': acceptance_ratio,
         'network': net
@@ -1090,7 +1091,7 @@ def bottleneck_split_augment(network, users: Dict, llms: Dict,
         'allocations': allocations,
         'total_cost': total_cost,
         'round_allocations': round_allocations,
-        'total_flow': total_demand,
+        'total_flow': served_flow,
         'served_flow': served_flow,
         'acceptance_ratio': acceptance_ratio,
         'search_space': search_space,
@@ -1218,7 +1219,7 @@ def one_split(network, users: Dict, llms: Dict, user_ideal_llms: Dict,
         'allocations': allocations,
         'total_cost': total_cost,
         'round_allocations': round_allocations,
-        'total_flow': total_demand,
+        'total_flow': served_flow,
         'served_flow': served_flow,
         'acceptance_ratio': acceptance_ratio,
         'search_space': search_space,
@@ -1419,7 +1420,7 @@ def one_split_augment(network, users: Dict, llms: Dict,
         'allocations': allocations,
         'total_cost': total_cost,
         'round_allocations': round_allocations,
-        'total_flow': total_demand,
+        'total_flow': served_flow,
         'served_flow': served_flow,
         'acceptance_ratio': acceptance_ratio,
         'search_space': search_space,
@@ -1428,7 +1429,7 @@ def one_split_augment(network, users: Dict, llms: Dict,
 
 
 def NW_bottleneck_split_augment(network, users: Dict, llms: Dict,
-                                  **kwargs) -> Dict[str, Any]:
+                                **kwargs) -> Dict[str, Any]:
     """
     瓶颈分流增广算法（不允许LLM反向边版本）
 
@@ -1582,13 +1583,8 @@ def NW_bottleneck_split_augment(network, users: Dict, llms: Dict,
     allocations = []
     for ra in round_allocations:
         if ra['user_id'] is not None and ra['llm_id'] is not None:
-            allocations.append((
-                ra['user_id'],
-                ra['llm_id'],
-                ra['path'],
-                ra['push_flow'],
-                ra['round_cost']
-            ))
+            allocations.append((ra['user_id'], ra['llm_id'], ra['path'],
+                                ra['push_flow'], ra['round_cost']))
 
     # 计算最终总成本和服务流量
     total_cost = cumulative_cost
@@ -1600,7 +1596,7 @@ def NW_bottleneck_split_augment(network, users: Dict, llms: Dict,
         'allocations': allocations,
         'total_cost': total_cost,
         'round_allocations': round_allocations,
-        'total_flow': total_demand,
+        'total_flow': served_flow,
         'served_flow': served_flow,
         'acceptance_ratio': acceptance_ratio,
         'network': net
@@ -1608,7 +1604,7 @@ def NW_bottleneck_split_augment(network, users: Dict, llms: Dict,
 
 
 def NW_one_split_augment(network, users: Dict, llms: Dict,
-                          **kwargs) -> Dict[str, Any]:
+                         **kwargs) -> Dict[str, Any]:
     """
     1-split增广算法（不允许LLM反向边版本）
 
@@ -1765,13 +1761,8 @@ def NW_one_split_augment(network, users: Dict, llms: Dict,
     allocations = []
     for ra in round_allocations:
         if ra['user_id'] is not None and ra['llm_id'] is not None:
-            allocations.append((
-                ra['user_id'],
-                ra['llm_id'],
-                ra['path'],
-                ra['push_flow'],
-                ra['round_cost']
-            ))
+            allocations.append((ra['user_id'], ra['llm_id'], ra['path'],
+                                ra['push_flow'], ra['round_cost']))
 
     # 计算最终总成本和服务流量
     total_cost = cumulative_cost
@@ -1783,7 +1774,7 @@ def NW_one_split_augment(network, users: Dict, llms: Dict,
         'allocations': allocations,
         'total_cost': total_cost,
         'round_allocations': round_allocations,
-        'total_flow': total_demand,
+        'total_flow': served_flow,
         'served_flow': served_flow,
         'acceptance_ratio': acceptance_ratio,
         'network': net

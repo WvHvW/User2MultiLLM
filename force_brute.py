@@ -28,8 +28,9 @@ from collections import defaultdict
 from Entity import load_network_from_sheets, load_user_info, load_llm_info, User, LLM, Network
 
 
-def brute_force_optimal(network: Network, users: Dict[int, User],
-                        llms: Dict[int, LLM]) -> Tuple[float, List, int, float]:
+def brute_force_optimal(
+        network: Network, users: Dict[int, User],
+        llms: Dict[int, LLM]) -> Tuple[float, List, int, float]:
     """
     真正的暴力枚举最优解（迭代式实现）
 
@@ -143,16 +144,18 @@ def brute_force_optimal(network: Network, users: Dict[int, User],
                 llms_remaining[llm_id] -= 1
 
                 # 剪枝: 分支定界（仅当服务流量相同时比较开销）
+                # 但仍允许继续尝试后续流量单位，以便获得更高服务率
                 if current_served == best_served_flow and current_cost >= best_cost:
                     pruned_by_cost += 1
-                    break
+                    continue
 
             # 计入实际搜索空间
             actual_search_space += 1
 
             # 更新最优解（优先选择服务流量更多的，其次选择开销更小的）
-            if (current_served > best_served_flow or
-                (current_served == best_served_flow and current_cost < best_cost)):
+            if (current_served > best_served_flow
+                    or (current_served == best_served_flow
+                        and current_cost < best_cost)):
                 best_cost = current_cost
                 best_served_flow = current_served
                 best_solution = (ordering, allocation)

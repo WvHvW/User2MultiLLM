@@ -4,9 +4,8 @@
 根据ExperimentSetting.md的"暴力算法实验设计"：
 1. 为每一单位流量枚举去处（force_brute）
 2. 每轮随机分配user和llm位置
-3. 对比5个算法：force_brute, 1-split, 1-split-augment, bottleneck-split, bottleneck-split-augment
-4. 只记录bottleneck-split-augment比bottleneck-split好20%以上的数据
-5. 收集10组有效数据后结束
+3. 对比5个算法：force_brute, 1-split, 1-split-augment, bottleneck-split, NW-bottleneck-split-augment
+4. 收集固定轮数的数据（不再做改进率筛选）
 """
 
 import os
@@ -19,18 +18,18 @@ from typing import Dict, List, Tuple
 import Entity
 from Entity import Network, User, LLM
 from force_brute import brute_force_optimal
-from Algorithm import (one_split_no_aggregate, one_split_augment,
-                       bottleneck_split_no_aggregate, bottleneck_split_augment,
-                       one_split, bottleneck_split)
+from Algorithm import (one_split_no_aggregate, bottleneck_split_no_aggregate,
+                       NW_bottleneck_split_augment, one_split,
+                       bottleneck_split)
 
 
 def random_assign_users_llms(
         network: Network,
         num_users: int = 4,
         num_llms: int = 2,
-        user_demands: List[int] = [3, 3, 3, 5],
-        llm_capacities: List[int] = [7,
-                                     7]) -> Tuple[Dict, Dict, Dict, Network]:
+        user_demands: List[int] = [1, 1, 1, 1],
+        llm_capacities: List[int] = [3,
+                                     1]) -> Tuple[Dict, Dict, Dict, Network]:
     """
     随机从网络节点中选择user和llm位置，并创建对应对象
 
@@ -148,12 +147,11 @@ def run_single_round(network: Network, users: Dict[int, User], llms: Dict[int,
         ('1-split_no_aggregation', one_split_no_aggregate,
          True),  # (算法名, 函数, 是否需要user_ideal_llms)
         ('1-split', one_split, True),  # 汇集图版本也需要user_ideal_llms（虽然内部不用）
-        ('1-split-augment', one_split_augment, False),
         ('bottleneck-split_no_aggregation', bottleneck_split_no_aggregate,
          True),
         ('bottleneck-split', bottleneck_split,
          True),  # 汇集图版本也需要user_ideal_llms
-        ('bottleneck-split-augment', bottleneck_split_augment, False)
+        ('NW-bottleneck-split-augment', NW_bottleneck_split_augment, False)
     ]
 
     for algo_name, algo_func, need_ideal in algorithms:
@@ -183,8 +181,9 @@ def run_single_round(network: Network, users: Dict[int, User], llms: Dict[int,
 
             total_cost = result.get('total_cost', 0)
             total_demand = sum(u.bw for u in users.values())
-            total_flow = result.get('total_flow', 0)
-            acceptance_ratio = total_flow / total_demand if total_demand > 0 else 0
+            served_flow = result.get('served_flow',
+                                     result.get('total_flow', 0))
+            acceptance_ratio = served_flow / total_demand if total_demand > 0 else 0
             search_space = result.get('search_space', None)  # 提取搜索空间
 
             results.append({
@@ -208,58 +207,6 @@ def run_single_round(network: Network, users: Dict[int, User], llms: Dict[int,
             })
 
     return results
-
-
-def check_optimization_condition(results: List[Dict]) -> bool:
-    """
-    检查是否满足统计条件：
-    1. bottleneck-split-augment比bottleneck-split_no_aggregation好10%以上
-    2. bottleneck-split-augment花销 >= force_brute（只统计augment未达到全局最优的情况）
-    """
-    bottleneck_cost = None
-    augment_cost = None
-    brute_force_cost = None
-
-    for r in results:
-        if r['算法名'] == 'bottleneck-split_no_aggregation' and r[
-                '总花销'] is not None:
-            bottleneck_cost = r['总花销']
-        elif r['算法名'] == 'bottleneck-split-augment' and r['总花销'] is not None:
-            augment_cost = r['总花销']
-        elif r['算法名'] == 'force_brute' and r['总花销'] is not None:
-            brute_force_cost = r['总花销']
-
-    # 检查数据完整性
-    if bottleneck_cost is None or augment_cost is None or brute_force_cost is None:
-        print(f"\n  数据不完整，跳过")
-        print(f"    bottleneck_cost: {bottleneck_cost}")
-        print(f"    augment_cost: {augment_cost}")
-        print(f"    brute_force_cost: {brute_force_cost}")
-        return False
-
-    if bottleneck_cost == 0:
-        print(f"\n  bottleneck-split开销为0，跳过")
-        return False
-
-    # 计算改进率
-    improvement = (bottleneck_cost - augment_cost) / bottleneck_cost
-
-    print(f"\n  检查条件:")
-    print(f"    force_brute={brute_force_cost:.2f}")
-    print(f"    bottleneck-split_no_aggregation={bottleneck_cost:.2f}")
-    print(f"    bottleneck-split-augment={augment_cost:.2f}")
-    print(f"    改进率={improvement*100:.1f}%")
-
-    # 条件1: augment比bottleneck好15%以上
-    condition1 = improvement >= 0.00
-
-    # 条件2: augment花销 >= force_brute（只统计未达最优的情况）
-    condition2 = augment_cost >= brute_force_cost
-
-    print(f"    条件1(改进率≥15%): {'OK' if condition1 else 'NO'}")
-    print(f"    条件2(augment≥brute): {'OK' if condition2 else 'NO'}")
-
-    return condition1 and condition2
 
 
 def main():
@@ -288,10 +235,10 @@ def main():
     print()
 
     # 2. 实验配置
-    num_users = 1
-    num_llms = 1
+    num_users = 4
+    num_llms = 2
     user_demands = [7]
-    llm_capacities = [7]
+    llm_capacities = [5]
     target_valid_rounds = 20  # 目标收集20组有效数据
 
     print(f"实验配置:")
@@ -299,8 +246,7 @@ def main():
     print(f"  用户需求: {user_demands} (总计{sum(user_demands)}单位)")
     print(f"  LLM数: {num_llms}")
     print(f"  LLM容量: {llm_capacities}")
-    print(f"  目标收集: {target_valid_rounds}组有效数据")
-    print(f"  有效数据条件: bottleneck-split-augment比bottleneck-split好10%以上")
+    print(f"  目标收集: {target_valid_rounds}组数据")
     print()
 
     # 3. 运行实验
@@ -320,28 +266,23 @@ def main():
         round_results = run_single_round(exp_network, users, llms,
                                          user_ideal_llms, round_idx)
 
-        # 检查是否满足条件
-        if check_optimization_condition(round_results):
-            valid_count += 1
-            print(f"\n[OK] 第 {valid_count}/{target_valid_rounds} 组有效数据")
+        # 直接累积结果，不再做改进率筛选
+        valid_count += 1
+        print(f"\n[OK] 第 {valid_count}/{target_valid_rounds} 组数据")
 
-            # 添加结果（带轮次编号）
-            for r in round_results:
-                r['轮次'] = valid_count
-            all_results.extend(round_results)
+        for r in round_results:
+            r['轮次'] = valid_count
+        all_results.extend(round_results)
 
-            # 不同轮次间添加空行标记
-            if valid_count < target_valid_rounds:
-                all_results.append({
-                    '轮次': None,
-                    '算法名': None,
-                    '总花销': None,
-                    '运行时间': None,
-                    '服务率': None,
-                    '搜索空间大小': None
-                })
-        else:
-            print(f"\n[NO] 不满足条件（需要改进≥20%），跳过本轮")
+        if valid_count < target_valid_rounds:
+            all_results.append({
+                '轮次': None,
+                '算法名': None,
+                '总花销': None,
+                '运行时间': None,
+                '服务率': None,
+                '搜索空间大小': None
+            })
 
     # 4. 保存结果
     if all_results:
